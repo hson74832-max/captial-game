@@ -284,16 +284,26 @@ function simulateTelecom(state: GameState, index: StateIndex) {
     if (!city) continue;
     const stats = building.telecom;
 
-    stats.infrastructureCapacity += stats.upgradeBudget * 240;
+    // Infrastructure rolls out gradually — towers and backhaul take months to build,
+    // so capacity creeps toward the funded target instead of arriving instantly.
+    const fundedTarget = stats.infrastructureCapacity + stats.upgradeBudget * 240;
+    stats.infrastructureCapacity += (fundedTarget - stats.infrastructureCapacity) * 0.06;
     city.bandwidthCapacity += stats.infrastructureCapacity;
 
     // Cheaper plans win subscribers; capacity caps how many can be served.
     const competing = telecoms.filter(item => item.cityId === city.id);
     const averagePrice = competing.reduce((sum, item) => sum + (item.telecom?.monthlyPrice ?? 30), 0) / Math.max(1, competing.length);
     const priceAdvantage = Math.max(0.2, Math.min(2.2, averagePrice / Math.max(1, stats.monthlyPrice)));
-    const addressable = city.population * 0.42 * priceAdvantage / Math.max(1, competing.length);
+    // Marketing spend accelerates acquisition; without it growth is word-of-mouth slow.
+    const marketingBoost = 0.6 + stats.upgradeBudget * 1.6;
+    const addressable = city.population * 0.42 * priceAdvantage * marketingBoost / Math.max(1, competing.length);
 
-    stats.subscribers += (Math.min(addressable, stats.infrastructureCapacity) - stats.subscribers) * 0.02;
+    // Monthly churn of ~2.5% (switching, relocation, dissatisfaction) plus a
+    // congestion penalty when utilisation runs hot.
+    const congestion = stats.utilizedCapacity / Math.max(1, stats.infrastructureCapacity);
+    const churnRate = 0.025 + Math.max(0, congestion - 0.8) * 0.15;
+    const target = Math.min(addressable, stats.infrastructureCapacity);
+    stats.subscribers = Math.max(0, stats.subscribers * (1 - churnRate) + (target - stats.subscribers) * 0.02 * marketingBoost);
     stats.utilizedCapacity = stats.subscribers;
 
     building.revenue = stats.subscribers * stats.monthlyPrice / (30 * 24);
@@ -319,13 +329,17 @@ export function commitTelecomPricing(state: GameState) {
 // ============= E-COMMERCE =============
 
 /**
- * Freight as a share of price decides what sells online. ~10% is fine,
- * ~50% is not, because the customer pays the freight.
+ * Freight as a share of price decides what sells online. Shoppers tolerate ~10%,
+ * start abandoning carts past 20%, and essentially nobody completes checkout once
+ * shipping exceeds ~40% of the item price. Heavy, cheap goods are simply unviable.
  */
 export function ecommerceFreightPenalty(price: number, freight: number): number {
   if (price <= 0) return 0;
   const share = freight / price;
-  return Math.max(0.05, 1 - Math.pow(share * 2, 1.5));
+  if (share <= 0.10) return 1;
+  if (share >= 0.40) return 0.02;
+  // Steep abandonment curve between 10% and 40%.
+  return Math.max(0.02, 1 - Math.pow((share - 0.10) / 0.30, 1.6) * 0.98);
 }
 
 function simulateEcommerce(state: GameState, index: StateIndex) {

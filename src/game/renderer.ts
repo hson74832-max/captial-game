@@ -769,6 +769,11 @@ const BUILDING_COLORS: Record<string, { wall: string, roof: string, accent: stri
   internet_ecommerce: { wall: '#fdba74', roof: '#ea580c', accent: '#fef3c7' },
   software_company: { wall: '#93c5fd', roof: '#1d4ed8', accent: '#22d3ee' },
   seaport: { wall: '#1e40af', roof: '#1e3a8a', accent: '#fbbf24' },
+  telecom: { wall: '#94a3b8', roof: '#475569', accent: '#22d3ee' },
+  restaurant: { wall: '#b45309', roof: '#7c2d12', accent: '#fed7aa' },
+  fast_food: { wall: '#dc2626', roof: '#991b1b', accent: '#fde047' },
+  cafe: { wall: '#78350f', roof: '#451a03', accent: '#fbbf24' },
+  bar: { wall: '#4c1d95', roof: '#2e1065', accent: '#c4b5fd' },
 };
 
 export function getBuildingPalette(type: BuildingType) {
@@ -890,6 +895,10 @@ function drawBuilding(ctx: CanvasRenderingContext2D, building: Building, state: 
       drawRD(ctx, sx, sy, baseW, baseH, height, zoom, palette, building, time);
       break;
     case 'retail_store':
+    case 'restaurant':
+    case 'fast_food':
+    case 'cafe':
+    case 'bar':
       drawRetail(ctx, sx, sy, baseW, baseH, height, zoom, palette, building, time);
       break;
   }

@@ -1,7 +1,8 @@
 import type {
   GameState, City, Company, Building, Product, MovingEntity, Economy,
-  BuildingType, IsometricTile, ResourceNode, Goal, NewsTickerItem, Notification,
-  ProductKind, CreditRating, Bond, BankOffer, Executive, ResearchProject, LandHolding
+  BuildingType, IsometricTile, ResourceNode, IncomingOffer, NewsTickerItem, Notification,
+  ProductKind, CreditRating, Bond, BankOffer, Executive, ResearchProject, LandHolding,
+  MarketSegment, MenuItem, CreditEntry
 } from './types';
 import {
   generateTechnologies, generateSoftwareProducts, generateTalentPool, defaultTelecomStats,
@@ -116,6 +117,7 @@ const PRODUCT_CATEGORIES: Record<string, { products: string[], icon: string, nec
   'Leather Goods': { products: ['Leather Bag', 'Leather Belt', 'Leather Wallet'], icon: '👜', necessity: 35 },
   'Toys': { products: ['Stuffed Toy', 'Toy Racing Car', 'Video Game Console'], icon: '🎮', necessity: 30 },
   'Software': { products: ['Computer OS', 'Office Suite', '3D Modelling Software', 'Anti-virus Software'], icon: '💿', necessity: 20 },
+  'Prepared Food': { products: ['Burger Meal', 'Pizza', 'Pasta Dish', 'Steak Dinner', 'Coffee', 'Craft Beer', 'Sandwich', 'Salad Bowl'], icon: '🍽️', necessity: 62 },
 };
 
 type ProductRule = {
@@ -163,7 +165,120 @@ const PRODUCT_RULES: Record<string, ProductRule> = {
   'Office Suite': { kind: 'digital', cost: 45, qualityWeight: 55, brandWeight: 25, priceWeight: 20, unlockYear: 1992 },
   '3D Modelling Software': { kind: 'digital', cost: 140, qualityWeight: 70, brandWeight: 20, priceWeight: 10, unlockYear: 1998 },
   'Anti-virus Software': { kind: 'digital', cost: 35, qualityWeight: 60, brandWeight: 20, priceWeight: 20, unlockYear: 1994 },
+  // Prepared food: made on premises from farm/semi inputs, sold same day.
+  'Burger Meal': { kind: 'consumer', cost: 4.2, priceWeight: 42, qualityWeight: 33, brandWeight: 25, inputs: [['Livestock', 0.3], ['Flour', 0.2]] },
+  Pizza: { kind: 'consumer', cost: 5.1, priceWeight: 40, qualityWeight: 35, brandWeight: 25, inputs: [['Flour', 0.35], ['Milk', 0.15]] },
+  'Pasta Dish': { kind: 'consumer', cost: 4.6, priceWeight: 38, qualityWeight: 37, brandWeight: 25, inputs: [['Flour', 0.3]] },
+  'Steak Dinner': { kind: 'consumer', cost: 13.5, priceWeight: 25, qualityWeight: 45, brandWeight: 30, inputs: [['Livestock', 0.8]] },
+  Coffee: { kind: 'consumer', cost: 1.1, priceWeight: 35, qualityWeight: 30, brandWeight: 35, inputs: [['Milk', 0.1]] },
+  'Craft Beer': { kind: 'consumer', cost: 2.4, priceWeight: 32, qualityWeight: 33, brandWeight: 35, inputs: [['Wheat', 0.25]] },
+  Sandwich: { kind: 'consumer', cost: 3.1, priceWeight: 45, qualityWeight: 32, brandWeight: 23, inputs: [['Flour', 0.2], ['Livestock', 0.1]] },
+  'Salad Bowl': { kind: 'consumer', cost: 3.4, priceWeight: 40, qualityWeight: 38, brandWeight: 22, inputs: [['Corn', 0.2]] },
 };
+
+/** Menu specialisation per hospitality venue type. */
+const VENUE_MENUS: Record<string, string[]> = {
+  restaurant: ['Pasta Dish', 'Steak Dinner', 'Pizza', 'Salad Bowl'],
+  fast_food: ['Burger Meal', 'Sandwich', 'Pizza'],
+  cafe: ['Coffee', 'Sandwich', 'Salad Bowl'],
+  bar: ['Craft Beer', 'Burger Meal', 'Steak Dinner'],
+};
+
+export function isHospitality(type: BuildingType) {
+  return type === 'restaurant' || type === 'fast_food' || type === 'cafe' || type === 'bar';
+}
+
+/** Luxury names sit at the top of the value ladder and behave as Veblen goods. */
+const LUXURY_NAMES = new Set(['Steak Dinner', 'Wine', 'Perfume', 'Leather Jacket', 'Leather Bag', 'Electric Car', 'Smart Phone', 'Craft Beer']);
+const PREMIUM_NAMES = new Set(['Camera Phone', 'Digital Camera', 'Notebook Computer', 'Tablet Computer', 'Blazer', 'Sofa', 'Air Conditioner']);
+
+function segmentFor(name: string, category: string, cost: number): MarketSegment {
+  if (LUXURY_NAMES.has(name)) return 'luxury';
+  if (PREMIUM_NAMES.has(name)) return 'premium';
+  if (category === 'Raw Materials' || category === 'Farm Products' || category === 'Semi Products') return 'value';
+  if (cost > 400) return 'premium';
+  if (cost < 30) return 'value';
+  return 'mainstream';
+}
+
+/** Twelve monthly multipliers. Retail peaks in December, AC in summer, and so on. */
+function seasonalityFor(category: string, name: string): number[] {
+  const flat = () => Array(12).fill(1);
+  const curve = (peaks: Record<number, number>) => {
+    const arr = flat();
+    for (const [month, value] of Object.entries(peaks)) arr[Number(month)] = value;
+    return arr;
+  };
+  if (name === 'Air Conditioner') return curve({ 4: 1.5, 5: 2.1, 6: 2.4, 7: 2.2, 8: 1.5, 11: 0.5, 0: 0.45, 1: 0.5 });
+  if (name === 'Coffee') return curve({ 10: 1.25, 11: 1.35, 0: 1.35, 1: 1.25, 6: 0.85, 7: 0.85 });
+  if (name === 'Craft Beer' || name === 'Bottled Water') return curve({ 5: 1.3, 6: 1.45, 7: 1.4, 11: 0.85, 0: 0.8 });
+  switch (category) {
+    case 'Toys':
+      return curve({ 10: 1.6, 11: 3.2, 0: 0.55, 1: 0.6 });
+    case 'Electronics': case 'Computers': case 'Communication':
+      return curve({ 10: 1.45, 11: 2.1, 0: 0.7, 1: 0.75 });
+    case 'Apparel': case 'Footwear': case 'Cosmetics': case 'Jewelry':
+      return curve({ 8: 1.2, 10: 1.35, 11: 1.9, 0: 0.7 });
+    case 'Food': case 'Beverage': case 'Prepared Food':
+      return curve({ 11: 1.35, 6: 1.1, 0: 0.9 });
+    case 'Furniture': case 'Home Appliances':
+      return curve({ 4: 1.2, 5: 1.25, 10: 1.2, 11: 1.3, 1: 0.8 });
+    case 'Drugs':
+      return curve({ 0: 1.3, 1: 1.25, 10: 1.2, 11: 1.25, 6: 0.85 });
+    default:
+      return flat();
+  }
+}
+
+// ── Hospitality menu templates ────────────────────────────────────────────────
+// Real quick-service economics: combos carry the margin, drinks carry the
+// gross profit (fountain soda costs cents), kids boxes buy family footfall.
+type MenuTemplate = Omit<MenuItem, 'id'>;
+
+const MENU_TEMPLATES: Record<string, MenuTemplate[]> = {
+  fast_food: [
+    { name: 'Classic Burger', category: 'main', price: 5.49, foodCost: 1.62, popularity: 0.22, includesToy: false, enabled: true },
+    { name: 'Crispy Chicken Sandwich', category: 'main', price: 6.29, foodCost: 1.88, popularity: 0.14, includesToy: false, enabled: true },
+    { name: 'Value Combo Meal', category: 'combo', price: 9.99, foodCost: 2.94, popularity: 0.26, includesToy: false, enabled: true },
+    { name: 'Kids Fun Box', category: 'kids', price: 4.99, foodCost: 1.35, popularity: 0.11, includesToy: true, enabled: true },
+    { name: 'Fries', category: 'side', price: 2.79, foodCost: 0.41, popularity: 0.10, includesToy: false, enabled: true },
+    { name: 'Fountain Soft Drink', category: 'drink', price: 2.19, foodCost: 0.24, popularity: 0.13, includesToy: false, enabled: true },
+    { name: 'Soft-Serve Cone', category: 'dessert', price: 1.99, foodCost: 0.38, popularity: 0.04, includesToy: false, enabled: true },
+  ],
+  restaurant: [
+    { name: 'Ribeye Steak', category: 'main', price: 32.00, foodCost: 11.20, popularity: 0.16, includesToy: false, enabled: true },
+    { name: 'Handmade Pasta', category: 'main', price: 19.50, foodCost: 4.30, popularity: 0.22, includesToy: false, enabled: true },
+    { name: 'Wood-Fired Pizza', category: 'main', price: 17.00, foodCost: 3.90, popularity: 0.20, includesToy: false, enabled: true },
+    { name: 'Garden Salad', category: 'side', price: 8.50, foodCost: 1.95, popularity: 0.10, includesToy: false, enabled: true },
+    { name: 'Kids Pasta Plate', category: 'kids', price: 8.95, foodCost: 2.10, popularity: 0.07, includesToy: true, enabled: true },
+    { name: 'House Wine (glass)', category: 'drink', price: 11.00, foodCost: 2.60, popularity: 0.15, includesToy: false, enabled: true },
+    { name: 'Tiramisu', category: 'dessert', price: 9.00, foodCost: 2.15, popularity: 0.10, includesToy: false, enabled: true },
+  ],
+  cafe: [
+    { name: 'Drip Coffee', category: 'drink', price: 2.95, foodCost: 0.38, popularity: 0.26, includesToy: false, enabled: true },
+    { name: 'Latte', category: 'drink', price: 4.85, foodCost: 0.82, popularity: 0.24, includesToy: false, enabled: true },
+    { name: 'Cold Brew', category: 'drink', price: 5.25, foodCost: 0.91, popularity: 0.12, includesToy: false, enabled: true },
+    { name: 'Breakfast Sandwich', category: 'main', price: 6.75, foodCost: 1.85, popularity: 0.16, includesToy: false, enabled: true },
+    { name: 'Almond Croissant', category: 'dessert', price: 4.25, foodCost: 1.05, popularity: 0.14, includesToy: false, enabled: true },
+    { name: 'Kids Hot Chocolate', category: 'kids', price: 3.25, foodCost: 0.62, popularity: 0.08, includesToy: true, enabled: true },
+  ],
+  bar: [
+    { name: 'Craft Draught Pint', category: 'drink', price: 8.50, foodCost: 1.70, popularity: 0.30, includesToy: false, enabled: true },
+    { name: 'Signature Cocktail', category: 'drink', price: 14.00, foodCost: 3.10, popularity: 0.20, includesToy: false, enabled: true },
+    { name: 'Bar Burger', category: 'main', price: 16.50, foodCost: 4.60, popularity: 0.20, includesToy: false, enabled: true },
+    { name: 'Loaded Fries', category: 'side', price: 9.00, foodCost: 2.05, popularity: 0.16, includesToy: false, enabled: true },
+    { name: 'Wings Platter', category: 'side', price: 13.50, foodCost: 4.20, popularity: 0.14, includesToy: false, enabled: true },
+  ],
+};
+
+/** Licensed toy cost per kids box — a real line item in QSR P&L. */
+export const KIDS_TOY_COST = 0.42;
+
+function buildMenu(type: BuildingType): MenuItem[] {
+  const template = MENU_TEMPLATES[type];
+  if (!template) return [];
+  return template.map(item => ({ ...item, id: generateId() }));
+}
 
 const CITY_NAMES = ['New York', 'Shanghai', 'London', 'Tokyo', 'Berlin', 'Sydney', 'Singapore', 'São Paulo', 'Mumbai', 'Toronto', 'Paris', 'Dubai'];
 const COMPANY_NAMES = ['Apex Corp', 'Titan Industries', 'Nova Group', 'Stellar Holdings', 'Prime Ventures', 'Zenith Corp', 'Crown Ltd'];
@@ -258,6 +373,10 @@ function generateProducts(rand: () => number): Product[] {
         obsolete: false,
         marketDemand: 35 + rand() * 65,
         playerMarketShare: 0,
+        segment: segmentFor(name, category, cost),
+        perceivedQuality: 30 + rand() * 40,
+        reviewScore: 3.2 + rand() * 0.8,
+        seasonality: seasonalityFor(category, name),
       });
     }
   }
@@ -314,6 +433,12 @@ function generateCities(rand: () => number, size: number): City[] {
       internetUsers: 0,
       bandwidthCapacity: 0,
       ecommerceAdoption: 0,
+      // Demographics: wealthier metros skew older and better educated; young
+      // family suburbs drive kids-menu and family-goods demand.
+      medianAge: 28 + rand() * 16,
+      educationIndex: Math.min(95, 18 + (18 + rand() * 90) * 0.55 + rand() * 20),
+      familyShare: 0.18 + rand() * 0.30,
+      carDependency: 0.25 + rand() * 0.6,
     };
   });
 }
@@ -348,6 +473,12 @@ function generateCompanies(rand: () => number, playerName: string): Company[] {
     dividendPayout: 20,
     intangibleTechnology: 0,
     autoAdjustPrices: true,
+    monthsInDistress: 0,
+    maxOfferRounds: 3,
+    brandAwareness: 5,
+    credit: [],
+    observedPlayerShare: {},
+    nextPriceReviewTick: 0,
   };
 
   const ai: Company[] = [];
@@ -380,6 +511,13 @@ function generateCompanies(rand: () => number, playerName: string): Company[] {
       dividendPayout: 10 + rand() * 35,
       intangibleTechnology: rand() * 30000000,
       autoAdjustPrices: true,
+      monthsInDistress: 0,
+      // Boards differ: some walk away after two rounds, others endure four.
+      maxOfferRounds: 2 + Math.floor(rand() * 3),
+      brandAwareness: 15 + rand() * 40,
+      credit: [],
+      observedPlayerShare: {},
+      nextPriceReviewTick: Math.floor(rand() * 2160),
     };
     ai.push(aiComp);
   }
@@ -411,6 +549,11 @@ const BUILDING_CONFIGS: Record<string, { name: string, cost: number, employees: 
   internet_ecommerce: { name: 'E-Commerce Platform', cost: 5200000, employees: 190, capacity: 500, w: 3, h: 3, sprites: 2 },
   software_company: { name: 'Software Studio', cost: 3200000, employees: 110, capacity: 0, w: 3, h: 2, sprites: 2 },
   telecom: { name: 'Telecom Operator', cost: 4800000, employees: 95, capacity: 0, w: 3, h: 2, sprites: 2 },
+  // ── Hospitality: high-turnover, small footprint, thin margins ──
+  restaurant: { name: 'Restaurant', cost: 850000, employees: 24, capacity: 320, w: 2, h: 2, sprites: 3 },
+  fast_food: { name: 'Fast Food Outlet', cost: 520000, employees: 18, capacity: 620, w: 2, h: 2, sprites: 3 },
+  cafe: { name: 'Cafe', cost: 310000, employees: 10, capacity: 380, w: 1, h: 1, sprites: 3 },
+  bar: { name: 'Bar & Grill', cost: 640000, employees: 16, capacity: 260, w: 2, h: 2, sprites: 3 },
   seaport: { name: 'Seaport', cost: 0, employees: 100, capacity: 1000, w: 3, h: 2, sprites: 2 },
 };
 
@@ -435,6 +578,7 @@ function createBuilding(
     [offsetX, offsetY] = snapOffRoad(city, offsetX, offsetY);
   }
   const eligibleProducts = products.filter(product => {
+    if (isHospitality(type)) return (VENUE_MENUS[type] || []).includes(product.name);
     if (type === 'farm') return product.kind === 'farm';
     if (type === 'mine') return product.kind === 'raw';
     if (type === 'factory') return product.kind === 'semi' || product.kind === 'consumer';
@@ -517,6 +661,24 @@ function createBuilding(
     rentPerUnit: 0,
     standingOffer: null,
     standingOfferBy: null,
+    offersMade: 0,
+    negotiationBlockedUntil: 0,
+    cogs: 0,
+    cachedAsk: 0,
+    askDrift: 0,
+    productSlots: 4,
+    warehouseTier: type === 'warehouse'
+      ? (['general', 'cold', 'hazmat'] as const)[Math.floor(Math.random() * 3)]
+      : 'general',
+    marketingBudget: type === 'telecom' ? 0.3 : 0,
+    menu: buildMenu(type),
+    loyalCustomerBase: 0.05,
+    // Suburban plots get generous surface parking; dense CBD sites do not.
+    parkingScore: city ? Math.max(0.1, Math.min(1, Math.hypot(offsetX - city.x, offsetY - city.y) / 14)) : 0.8,
+    highwayAccess: 0,
+    employeeSatisfaction: 55 + Math.random() * 20,
+    monthsUnprofitable: 0,
+    adBudget: 0,
   };
 }
 
@@ -614,25 +776,27 @@ function generateInitialBuildings(cities: City[], companies: Company[], products
         rentPerUnit: 0,
         standingOffer: null,
         standingOfferBy: null,
+        offersMade: 0,
+        negotiationBlockedUntil: 0,
+        cogs: 0,
+        cachedAsk: 0,
+        askDrift: 0,
+        productSlots: 4,
+        warehouseTier: 'general',
+        marketingBudget: 0,
+        menu: [],
+        loyalCustomerBase: 0,
+        parkingScore: 1,
+        highwayAccess: 1,
+        employeeSatisfaction: 70,
+        monthsUnprofitable: 0,
+        adBudget: 0,
       };
       buildings.push(b);
     }
   }
 
   return buildings;
-}
-
-function generateGoals(playerCompany: Company): Goal[] {
-  return [
-    { id: generateId(), name: 'First Million', description: 'Reach $75M in corporate cash', target: 75000000, current: playerCompany.cash, reward: 250000, completed: false, category: 'wealth', knowledgeReward: 2, deadlineYear: null },
-    { id: generateId(), name: 'Empire Builder', description: 'Own 10 operating firms', target: 10, current: playerCompany.buildings.length, reward: 500000, completed: false, category: 'expansion', knowledgeReward: 3, deadlineYear: 2010 },
-    { id: generateId(), name: 'Billionaire', description: 'Reach $1B market capitalization', target: 1000000000, current: playerCompany.marketCap, reward: 5000000, completed: false, category: 'wealth', knowledgeReward: 8, deadlineYear: null },
-    { id: generateId(), name: 'Multi-City', description: 'Operate in 3 different cities', target: 3, current: 0, reward: 1000000, completed: false, category: 'expansion', knowledgeReward: 4, deadlineYear: 2012 },
-    { id: generateId(), name: 'Market Dominator', description: 'Lead a product with at least 35% share', target: 35, current: 0, reward: 2000000, completed: false, category: 'dominance', knowledgeReward: 6, deadlineYear: null },
-    { id: generateId(), name: 'Innovator', description: 'Reach technology level 10', target: 10, current: 1, reward: 1500000, completed: false, category: 'innovation', knowledgeReward: 8, deadlineYear: null },
-    { id: generateId(), name: 'Debt Free', description: 'Return outstanding debt to zero', target: 1, current: 0, reward: 250000, completed: false, category: 'wealth', knowledgeReward: 2, deadlineYear: null },
-    { id: generateId(), name: 'Media Mogul', description: 'Own a television station', target: 1, current: 0, reward: 750000, completed: false, category: 'dominance', knowledgeReward: 3, deadlineYear: null },
-  ];
 }
 
 function generateBankOffers(companies: Company[], rand: () => number): BankOffer[] {
@@ -735,8 +899,18 @@ function generateRentalBuildings(
     const numApartments = Math.floor(6 + popMillions * 1.8 + rand() * 5);
     const numCommercial = Math.floor(3 + popMillions * 0.9 + rand() * 3);
 
-    for (let i = 0; i < numApartments + numCommercial; i++) {
-      const type: BuildingType = i < numApartments ? 'apartment' : 'commercial';
+    // Hospitality density tracks population — every city eats out.
+    const venueTypes: BuildingType[] = [];
+    const venueCount = Math.floor(4 + popMillions * 2.2 + rand() * 4);
+    for (let v = 0; v < venueCount; v++) {
+      const roll = rand();
+      venueTypes.push(roll < 0.34 ? 'fast_food' : roll < 0.62 ? 'cafe' : roll < 0.85 ? 'restaurant' : 'bar');
+    }
+
+    for (let i = 0; i < numApartments + numCommercial + venueTypes.length; i++) {
+      const type: BuildingType = i < numApartments ? 'apartment'
+        : i < numApartments + numCommercial ? 'commercial'
+        : venueTypes[i - numApartments - numCommercial];
       const owner = aiCompanies[Math.floor(rand() * aiCompanies.length)];
       // Place 5-12 tiles from center, snapped off road centrelines
       const angle = rand() * Math.PI * 2;
@@ -749,8 +923,14 @@ function generateRentalBuildings(
       if (occupied) continue;
 
       const building = createBuilding(type, owner.id, city, products, 0, bx, by);
-      building.occupancy = 40 + rand() * 50;
-      building.rentMultiplier = 0.85 + rand() * 0.3;
+      if (type === 'apartment' || type === 'commercial') {
+        building.occupancy = 40 + rand() * 50;
+        building.rentMultiplier = 0.85 + rand() * 0.3;
+      } else {
+        // Venues open with stock on hand and market-rate pricing.
+        building.pricingMultiplier = 0.9 + rand() * 0.35;
+        building.trainingLevel = 2 + Math.floor(rand() * 4);
+      }
       buildings.push(building);
       owner.buildings.push(building.id);
     }
@@ -765,7 +945,6 @@ export function createNewGame(seed: number = 1337, playerName: string = 'Your Co
   const companies = generateCompanies(rand, playerName);
   const buildings = generateInitialBuildings(cities, companies, products, 0);
   const playerCompany = companies[0];
-  const goals = generateGoals(playerCompany);
   const startYear = scenario === 'shanghai1990' ? 1990 : scenario === 'techboom' ? 2004 : 2000;
   const technologies = generateTechnologies();
   const softwareProducts = generateSoftwareProducts(technologies);
@@ -805,6 +984,23 @@ export function createNewGame(seed: number = 1337, playerName: string = 'Your Co
 
   // Generate extra rental buildings at start
   generateRentalBuildings(cities, companies, products, buildings, rand);
+
+  // Cache highway proximity once — it never changes for a fixed site.
+  for (const building of buildings) {
+    const home = cities.find(c => c.id === building.cityId);
+    if (!home) continue;
+    let best = 0;
+    for (const other of cities) {
+      if (other.id === home.id) continue;
+      const dx = other.x - home.x;
+      const dy = other.y - home.y;
+      const lengthSq = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((building.x - home.x) * dx + (building.y - home.y) * dy) / lengthSq));
+      const distance = Math.hypot(building.x - (home.x + t * dx), building.y - (home.y + t * dy));
+      best = Math.max(best, Math.max(0, 1 - distance / 6));
+    }
+    building.highwayAccess = best;
+  }
 
   return {
     technologies,
@@ -868,6 +1064,8 @@ export function createNewGame(seed: number = 1337, playerName: string = 'Your Co
       purchasingPowerIndex: 100,
       realEstateBubble: 12,
       moneySupply: 100,
+      dieselPrice: 3.65,
+      fuelShockMonths: 0,
     },
     notifications: [{
       id: generateId(),
@@ -880,7 +1078,7 @@ export function createNewGame(seed: number = 1337, playerName: string = 'Your Co
     camera: { x: cities[0]?.x ?? 100, y: cities[0]?.y ?? 100, zoom: 0.8 },
     mapSize: size,
     seed,
-    goals,
+    incomingOffers: [],
     overlay: 'none',
     paused: false,
     freight: [],
@@ -1239,7 +1437,6 @@ export function simulateTick(state: GameState): GameState {
   simulateDigitalHourly(newState, index);
   simulateCities(newState, index);
   simulateStockMarket(newState);
-  simulateGoals(newState);
   updateNewsTicker(newState);
 
   return newState;
@@ -1260,12 +1457,25 @@ function simulateMonthly(state: GameState): void {
     simulateAICompany(state, company);
   }
 
+  const monthlyIndex = buildStateIndex(state);
+  aiPriceResponse(state);
+  aiCompetitiveResponse(state, monthlyIndex);
+  aiCloseUnprofitable(state, monthlyIndex);
+  updateBrandAwareness(state, monthlyIndex);
+  driftAskingPrices(state);
+  simulateBankruptcy(state);
+  simulatePoaching(state);
+  updateFuelMarket(state);
+  updateProductPerception(state);
+  settleTradeCredit(state);
+
   refreshSupplyNetworks(state);
   simulateResearch(state);
   simulateProductLifecycle(state);
   updateLandValues(state);
   simulateDigitalMonthly(state);
   simulateAiTechCompanies(state, state.companies);
+  simulateIncomingOffers(state);
 
   if (playerCompany) {
     state.replayHistory.push({
@@ -1457,6 +1667,93 @@ function locationTraffic(state: GameState, city: City, x: number, y: number, ind
   return Math.min(100, centerTraffic + density);
 }
 
+/**
+ * Accessibility multiplier. Car-dependent cities punish sites without parking;
+ * highway frontage is what makes big-box retail and logistics viable at all.
+ */
+function accessibilityFactor(state: GameState, city: City, building: Building): number {
+  const bigBox = building.type === 'warehouse' || building.capacity > 400;
+  // Parking matters in proportion to how much the city drives.
+  const parkingNeed = city.carDependency;
+  const parkingTerm = 1 - parkingNeed * 0.55 * (1 - building.parkingScore);
+  // Highway frontage: strong for big-box/logistics, mild for urban formats.
+  const highwayTerm = 1 + building.highwayAccess * (bigBox ? 0.35 : 0.10);
+  return Math.max(0.35, parkingTerm) * highwayTerm;
+}
+
+/** Computes highway proximity once per building: near an arterial between cities. */
+function computeHighwayAccess(state: GameState, building: Building): number {
+  const home = state.cities.find(c => c.id === building.cityId);
+  if (!home) return 0;
+  let best = 0;
+  for (const other of state.cities) {
+    if (other.id === home.id) continue;
+    // Distance from the point to the straight line joining the two city centres.
+    const dx = other.x - home.x;
+    const dy = other.y - home.y;
+    const lengthSq = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((building.x - home.x) * dx + (building.y - home.y) * dy) / lengthSq));
+    const projX = home.x + t * dx;
+    const projY = home.y + t * dy;
+    const distance = Math.hypot(building.x - projX, building.y - projY);
+    best = Math.max(best, Math.max(0, 1 - distance / 6));
+  }
+  return best;
+}
+
+/**
+ * Demographic fit. Kids menus need families, premium tech needs educated buyers,
+ * pharmacy demand rises with median age.
+ */
+function demographicFit(city: City, product: Product): number {
+  let fit = 1;
+  if (product.segment === 'luxury' || product.segment === 'premium') {
+    fit *= 0.7 + (city.educationIndex / 100) * 0.6;
+  }
+  if (product.category === 'Drugs') fit *= 0.75 + (city.medianAge / 45) * 0.5;
+  if (product.category === 'Toys') fit *= 0.55 + city.familyShare * 1.8;
+  if (product.category === 'Computers' || product.category === 'Communication') {
+    fit *= 0.7 + (city.educationIndex / 100) * 0.55 + Math.max(0, (38 - city.medianAge) / 38) * 0.25;
+  }
+  return Math.max(0.25, Math.min(1.9, fit));
+}
+
+/**
+ * Price response with Veblen behaviour at the top of the ladder.
+ *
+ * Ordinary goods: quantity falls as price rises (negative exponent).
+ * Luxury goods: brand carries the purchase, price sensitivity collapses, and
+ * within a band a *higher* price signals exclusivity and lifts demand.
+ */
+function priceResponse(product: Product, priceMultiplier: number, confidence: number): number {
+  const brandStrength = product.brand / 100;
+  const baseElasticity = product.demandIndex > 70 ? 0.6 : product.demandIndex > 40 ? 1.1 : 1.8;
+
+  if (product.segment === 'luxury' && product.brand > 70) {
+    // Veblen band: demand peaks around a 1.35× premium then falls away.
+    const veblenPeak = 1.35;
+    const distance = Math.abs(priceMultiplier - veblenPeak);
+    const veblen = Math.max(0.35, 1.25 - distance * 0.85);
+    // Recessions gut discretionary luxury spending far harder than staples.
+    const luxuryConfidence = Math.pow(Math.max(0.05, confidence / 100), 2.2);
+    return veblen * luxuryConfidence;
+  }
+
+  // Strong brands blunt price sensitivity even outside true luxury.
+  const effectiveElasticity = baseElasticity * (1 - brandStrength * 0.55);
+  const confidenceExponent = product.demandIndex > 70 ? 0.35 : product.segment === 'premium' ? 1.7 : 1.1;
+  const confidenceTerm = Math.pow(Math.max(0.05, confidence / 100), confidenceExponent);
+  return Math.pow(priceMultiplier, -effectiveElasticity) * confidenceTerm;
+}
+
+/** National chain reach: awareness scales with total footprint, not just one city. */
+function nationalBrandFactor(company: Company | undefined, storeCount: number): number {
+  const awareness = company ? company.brandAwareness : 0;
+  // Diminishing returns on footprint, mirroring real chain economics.
+  const reach = Math.log10(1 + storeCount) * 0.22;
+  return 1 + reach + (awareness / 100) * 0.35;
+}
+
 function amenityScores(state: GameState, building: Building, index?: StateIndex) {
   const nearby = index
     ? queryRadius(index, building.x, building.y, 9)
@@ -1517,12 +1814,23 @@ function createFreightRoute(state: GameState, supplier: Building, buyer: Buildin
 function refreshBuildingSupply(state: GameState, building: Building) {
   const product = getProduct(state, building.productId);
   if (!product) return;
+  const isShop = building.type === 'retail_store' || building.type === 'internet_ecommerce';
   const neededProducts = building.type === 'factory'
     ? product.inputs.map(input => input.productId)
-    : building.type === 'retail_store' || building.type === 'warehouse' || building.type === 'internet_ecommerce'
-      ? [product.id]
+    : isShop || building.type === 'warehouse'
+      ? building.products.slice(0, building.productSlots)
       : [];
   if (neededProducts.length === 0) return;
+
+  // ── Economies of scale ────────────────────────────────────────────────────
+  // Two effects stack, as in real procurement:
+  //  1. Chain leverage — a 10+ outlet group negotiates better standing terms.
+  //  2. Order-size tiers — >1,000 units earns 5%, >5,000 units earns 12%.
+  const sameFormatCount = state.buildings.filter(b => b.companyId === building.companyId && b.type === building.type).length;
+  const chainLeverage = sameFormatCount >= 10 ? 0.92 : sameFormatCount >= 5 ? 0.97 : 1;
+  const orderSize = Math.max(20, building.capacity * 0.18 * sameFormatCount);
+  const orderTier = orderSize > 5000 ? 0.88 : orderSize > 1000 ? 0.95 : 1;
+  const volumeDiscount = chainLeverage * orderTier;
 
   building.supplierLinks = neededProducts.flatMap(productId => {
     const inputProduct = state.products.find(item => item.id === productId);
@@ -1535,7 +1843,7 @@ function refreshBuildingSupply(state: GameState, building: Building) {
         const distance = Math.max(1, Math.hypot(supplier.x - building.x, supplier.y - building.y));
         // Freight = distance × (fuel burn × diesel price) + hours driven × driver wage.
         // Diesel tracks inflation in a $3.50–$5.00/gal band; trucking is ~60 km/h.
-        const dieselPrice = Math.max(3.5, Math.min(5.0, 3.5 + state.economy.inflation * 0.45));
+        const dieselPrice = state.economy.dieselPrice;
         const fuelCost = distance * 0.06 * dieselPrice;
         const driverWage = state.cities.find(c => c.id === supplier.cityId)?.wageRate ?? 15;
         const timeCost = (distance / 60) * driverWage;
@@ -1551,13 +1859,26 @@ function refreshBuildingSupply(state: GameState, building: Building) {
     const link = {
       productId,
       supplierBuildingId: best.supplier.id,
-      pricePerUnit: best.pricePerUnit,
+      pricePerUnit: best.pricePerUnit * volumeDiscount,
       freightPerUnit: best.freightPerUnit,
       quality: best.quality,
     };
+    // ── Inventory psychology ────────────────────────────────────────────────
+    // Buyers hoard when supply looks fragile or prices are climbing: the reorder
+    // trigger rises and order sizes swell, exactly as in the 2020–22 shortages.
+    const scarcity = inputProduct.marketDemand > 75 ? 1 : 0;
+    const priceClimbing = state.economy.inflation > 5 ? 1 : 0;
+    const fuelCrisis = state.economy.fuelShockMonths > 0 ? 1 : 0;
+    const panic = Math.min(1, (scarcity + priceClimbing + fuelCrisis) / 3);
+    const reorderPoint = building.inventoryCapacity * (0.35 + panic * 0.35);
+    const orderMultiple = 1 + panic * 1.2;
+
     const inventory = building.inventory[productId] || 0;
-    if (inventory < building.inventoryCapacity * 0.35) {
-      const amount = Math.min(building.inventoryCapacity * 0.35, Math.max(20, building.capacity * 0.18));
+    if (inventory < reorderPoint) {
+      const amount = Math.min(
+        building.inventoryCapacity * (0.35 + panic * 0.4),
+        Math.max(20, building.capacity * 0.18 * orderMultiple),
+      );
       createFreightRoute(state, best.supplier, building, productId, amount, best.freightPerUnit * amount);
     }
     return [link];
@@ -1594,8 +1915,23 @@ function simulateFreightRoutes(state: GameState) {
       const goodsCost = available * (link?.pricePerUnit || product.productionCost);
       const buyerCompany = state.companies.find(company => company.id === buyer.companyId);
       const supplierCompany = state.companies.find(company => company.id === supplier.companyId);
-      if (buyerCompany) buyerCompany.cash -= goodsCost + route.freightCost;
-      if (supplierCompany && supplierCompany.id !== buyerCompany?.id) supplierCompany.cash += goodsCost;
+      // Freight is paid on collection; goods run on net-30 trade credit.
+      if (buyerCompany) buyerCompany.cash -= route.freightCost;
+      const NET_30 = 24 * 30;
+      if (buyerCompany && supplierCompany && supplierCompany.id !== buyerCompany.id) {
+        buyerCompany.credit.push({
+          id: generateId(), counterpartyId: supplierCompany.id, amount: goodsCost,
+          dueTick: state.tick + NET_30, kind: 'payable',
+        });
+        supplierCompany.credit.push({
+          id: generateId(), counterpartyId: buyerCompany.id, amount: goodsCost,
+          dueTick: state.tick + NET_30, kind: 'receivable',
+        });
+      } else if (buyerCompany) {
+        // Intra-group transfer settles immediately.
+        buyerCompany.cash -= goodsCost;
+        if (supplierCompany) supplierCompany.cash += goodsCost;
+      }
     }
     route.status = 'delivered';
     completed.push(route.id);
@@ -1680,11 +2016,15 @@ function simulateBuildings(state: GameState, index: StateIndex): void {
     const city = state.cities.find(item => item.id === building.cityId);
     if (!city) continue;
     const product = getProduct(state, building.productId);
-    const wageCost = building.employees * city.wageRate / (30 * 24);
-    const maintenance = building.constructionCost * 0.000015;
-    const trainingCost = wageCost * building.trainingBudget * 0.5;
+    // ── Labour: headcount is payroll, not concurrent staffing. Roughly a third of
+    // staff are on shift at any hour, so hourly cost = headcount × wage × shift factor.
+    const shiftFactor = isDaytime ? 0.34 : 0.12;
+    const wageCost = building.employees * city.wageRate * shiftFactor;
+    const maintenance = building.constructionCost * 0.0000045;
+    const trainingCost = wageCost * building.trainingBudget * 0.18;
     building.operatingCost = wageCost + maintenance + trainingCost;
     building.revenue = 0;
+    building.cogs = 0;
     building.supply = 0;
     building.demand = 0;
 
@@ -1718,55 +2058,191 @@ function simulateBuildings(state: GameState, index: StateIndex): void {
           addNotification(state, { id: generateId(), message: `${building.name} has exhausted its reserve`, type: 'warning', tick: state.tick });
         }
       }
-      building.inventory[product.id] = Math.min(building.inventoryCapacity, (building.inventory[product.id] || 0) + productionUnits);
-      building.supply = productionUnits * 720;
-      building.demand = product.marketDemand / 100 * building.capacity * 0.78;
+      // ── Producer sales model ─────────────────────────────────────────────
+      // Output splits into three channels:
+      //   1. Internal group transfers (own downstream plants) — booked at cost+10%.
+      //   2. Contract sales to linked external buyers (only when NOT internal-sale).
+      //   3. Open spot market at a wholesale discount (only when NOT internal-sale).
+      // "Internal sale" therefore genuinely withholds supply from rivals and trades
+      // away spot revenue — it is a strategic choice, never a free exploit.
+      const onHand = (building.inventory[product.id] || 0) + productionUnits;
+
+      const ownDownstream = state.buildings.filter(b =>
+        b.companyId === building.companyId && b.id !== building.id &&
+        (b.type === 'factory' || b.type === 'retail_store' || b.type === 'warehouse') &&
+        b.supplierLinks.some(l => l.supplierBuildingId === building.id && l.productId === product.id)
+      );
+      const internalDemand = ownDownstream.reduce((sum, b) => sum + b.capacity / 14 * 0.5, 0);
+      const internalUnits = Math.min(onHand, internalDemand);
+
+      const marketAbsorption = (product.marketDemand / 100) * (building.capacity / 12) * (0.7 + city.population / 8_000_000);
+      const externalUnits = building.internalSale
+        ? 0
+        : Math.min(onHand - internalUnits, Math.max(productionUnits * 0.6, marketAbsorption));
+
+      const unitsShipped = internalUnits + externalUnits;
+      building.inventory[product.id] = Math.max(0, Math.min(building.inventoryCapacity, onHand - unitsShipped));
+
+      const unitInputCost = product.inputs.reduce((sum, input) => {
+        const link = building.supplierLinks.find(l => l.productId === input.productId);
+        return sum + input.quantity * ((link?.pricePerUnit ?? 0) + (link?.freightPerUnit ?? 0));
+      }, 0);
+      const internalPrice = unitInputCost * 1.10 || product.productionCost * 0.95;
+      const spotPrice = product.currentPrice * 0.72;
+      building.revenue = internalUnits * internalPrice + externalUnits * spotPrice;
+      building.cogs = unitsShipped * unitInputCost;
+
+      building.supply = onHand;
+      building.demand = (internalDemand + marketAbsorption) * 12;
       building.utilization = Math.min(100, productionUnits / Math.max(0.01, building.capacity / 720) * 100);
-      const externalSaleRatio = building.internalSale ? 0 : Math.max(0, Math.min(0.45, (building.supply - building.demand * 0.6) / Math.max(1, building.supply)));
-      building.revenue = productionUnits * product.currentPrice * 0.72 * externalSaleRatio;
-    } else if ((building.type === 'retail_store' || building.type === 'internet_ecommerce') && product) {
+    } else if ((building.type === 'retail_store' || building.type === 'internet_ecommerce' || isHospitality(building.type)) && product) {
+      // Multi-line retail: a shop stocks up to `productSlots` product lines and each
+      // line draws its own demand curve. Venues keep a single menu.
+      const isShop = building.type === 'retail_store' || building.type === 'internet_ecommerce';
+      const stocked: Product[] = isShop
+        ? building.products
+            .slice(0, building.productSlots)
+            .map(id => state.products.find(p => p.id === id))
+            .filter((p): p is Product => Boolean(p))
+        : [product];
+
       const localTraffic = building.type === 'internet_ecommerce'
         ? Math.min(100, state.cities.reduce((sum, item) => sum + item.population, 0) / 1000000 * 2.5)
         : locationTraffic(state, city, building.x, building.y, index);
-      let chainCount = 0;
-      for (const other of index.buildingsByCompany.get(building.companyId) ?? []) {
-        if (other.cityId === building.cityId && other.type === building.type && other.productId === product.id) chainCount++;
-      }
-      const chainBonus = Math.min(1.45, 1 + Math.max(0, chainCount - 1) * 0.08);
-      // ── CES microeconomics: demand = Base × (P/P̄)^(−ε) × (W/W̄)^(income elasticity) ──
-      const necessity = product.demandIndex / 100;
       const avgWage = state.cities.reduce((sum, item) => sum + item.wageRate, 0) / Math.max(1, state.cities.length);
-      const priceElasticity = necessity > 0.7 ? 0.6 : necessity > 0.4 ? 1.1 : 1.8; // inelastic necessities ↔ elastic luxuries
-      const incomeElasticity = necessity > 0.7 ? 0.25 : necessity > 0.4 ? 0.9 : 1.6;
-      const priceRatio = building.pricingMultiplier; // shelf price relative to market reference
       const wageRatio = city.wageRate / Math.max(1, avgWage);
-      const cesDemand = Math.pow(priceRatio, -priceElasticity) * Math.pow(Math.max(0.4, wageRatio), incomeElasticity);
-      const affluence = Math.max(0.45, Math.min(1.6, wageRatio));
-      const incomeDemand = necessity + (1 - necessity) * affluence;
-      const rating = productRating(product, building.pricingMultiplier) / 100;
-      const timeFactor = building.type === 'internet_ecommerce' ? 0.8 : isDaytime ? 1 : 0.22;
-      const desiredSales = building.capacity / 720 * (localTraffic / 100) * chainBonus * incomeDemand * rating * timeFactor * 5 * cesDemand;
-      const available = building.inventory[product.id] || 0;
-      const unitsSold = Math.min(available, desiredSales);
-      const perishability = product.category === 'Food' ? 0.0022 : product.category === 'Beverage' ? 0.0012 : product.category === 'Drugs' ? 0.00055 : 0;
-      const expiredUnits = Math.min(Math.max(0, available - unitsSold), Math.max(0, available - unitsSold) * perishability);
-      building.inventory[product.id] = Math.max(0, available - unitsSold - expiredUnits);
-      building.lastUnitsSold = unitsSold;
-      building.expiredUnits = expiredUnits;
-      building.spoilageLoss = expiredUnits * (building.inputCost || product.productionCost);
+      const tradingHours = isHospitality(building.type) ? 10 : 14;
+      const baseHourly = (building.capacity / Math.max(1, stocked.length)) / tradingHours;
+      const timeFactor = building.type === 'internet_ecommerce' ? 0.85 : isDaytime ? 1 : 0.2;
+      const trafficFactor = 0.4 + (localTraffic / 100) * 0.95;
+
+      // ── Structural multipliers applied to every line in this store ──
+      const owner = index.companiesById.get(building.companyId);
+      const nationalStores = (index.buildingsByCompany.get(building.companyId) ?? [])
+        .filter(b => b.type === building.type).length;
+      const brandReach = nationalBrandFactor(owner, nationalStores);
+      const access = building.type === 'internet_ecommerce' ? 1 : accessibilityFactor(state, city, building);
+      // Happy staff serve better, and service quality converts footfall into repeat custom.
+      const serviceQuality = 0.75 + (building.employeeSatisfaction / 100) * 0.35 + (building.trainingLevel / 9) * 0.15;
+      const seasonIndex = state.month - 1;
+
+      let totalRevenue = 0;
+      let totalCogs = 0;
+      let totalSold = 0;
+      let totalExpired = 0;
+      let totalSupply = 0;
+      let totalDemand = 0;
+      let needsRestock = false;
+      let loyaltyPull = 0;
+
+      for (const line of stocked) {
+        let chainCount = 0;
+        for (const other of index.buildingsByCompany.get(building.companyId) ?? []) {
+          if (other.cityId === building.cityId && other.type === building.type && other.productId === line.id) chainCount++;
+        }
+        const localChain = Math.min(1.45, 1 + Math.max(0, chainCount - 1) * 0.08);
+        const necessity = line.demandIndex / 100;
+        const incomeElasticity = necessity > 0.7 ? 0.25 : necessity > 0.4 ? 0.9 : 1.6;
+        // Price/confidence response, Veblen-aware for luxury lines.
+        const priceTerm = priceResponse(line, building.pricingMultiplier, state.economy.consumerConfidence);
+        const incomeTerm = Math.pow(Math.max(0.4, wageRatio), incomeElasticity);
+        const incomeDemand = necessity + (1 - necessity) * Math.max(0.45, Math.min(1.6, wageRatio));
+        // Consumers judge perceived quality and reviews, not the hidden stat.
+        const reputation = 0.55 + (line.perceivedQuality / 100) * 0.55 + (line.reviewScore - 3) * 0.12;
+        const demographics = demographicFit(city, line);
+        const season = line.seasonality[seasonIndex] ?? 1;
+
+        const desiredSales = baseHourly * trafficFactor * reputation * localChain * brandReach
+          * incomeDemand * priceTerm * incomeTerm * timeFactor * access * serviceQuality * demographics * season;
+        loyaltyPull += desiredSales;
+
+        const available = isHospitality(building.type) ? desiredSales : (building.inventory[line.id] || 0);
+        const unitsSold = Math.min(available, desiredSales);
+        const perishability = isHospitality(building.type) ? 0
+          : line.category === 'Food' ? 0.0022 : line.category === 'Beverage' ? 0.0012 : line.category === 'Drugs' ? 0.00055 : 0;
+        const expiredUnits = Math.max(0, available - unitsSold) * perishability;
+        if (!isHospitality(building.type)) {
+          building.inventory[line.id] = Math.max(0, available - unitsSold - expiredUnits);
+          if (building.inventory[line.id] < building.inventoryCapacity * 0.15) needsRestock = true;
+        }
+
+        const unitCost = isHospitality(building.type)
+          ? line.productionCost * 1.05
+          : ((building.supplierLinks.find(l => l.productId === line.id)?.pricePerUnit ?? 0) +
+             (building.supplierLinks.find(l => l.productId === line.id)?.freightPerUnit ?? 0) || line.productionCost * 1.35);
+
+        totalRevenue += unitsSold * line.currentPrice * building.pricingMultiplier;
+        totalCogs += unitsSold * unitCost + expiredUnits * unitCost;
+        totalSold += unitsSold;
+        totalExpired += expiredUnits;
+        totalSupply += available;
+        totalDemand += desiredSales * tradingHours;
+      }
+
+      // ── Customer loyalty & switching friction ──────────────────────────────
+      // A store's habitual base migrates slowly: at most ~15% of customers switch
+      // per month even when a rival is clearly better, so undercutting buys share
+      // gradually rather than instantly.
+      const competitiveAppeal = Math.min(1, loyaltyPull / Math.max(0.001, baseHourly * stocked.length));
+      const monthlySwitchRate = 0.15 / (30 * 24); // per-hour equivalent
+      building.loyalCustomerBase += (competitiveAppeal - building.loyalCustomerBase) * monthlySwitchRate * 24;
+      building.loyalCustomerBase = Math.max(0, Math.min(1, building.loyalCustomerBase));
+      // Locked-in customers keep buying regardless of today's price; the rest are contestable.
+      const loyaltyFloor = building.loyalCustomerBase * 0.55;
+      const stickiness = loyaltyFloor + (1 - loyaltyFloor) * competitiveAppeal;
+      const loyaltyAdjusted = stickiness / Math.max(0.001, competitiveAppeal || 1);
+      totalSold *= loyaltyAdjusted;
+      totalRevenue *= loyaltyAdjusted;
+      totalCogs *= loyaltyAdjusted;
+
+      // ── Hospitality menu P&L: covers × menu mix, not a single product line ──
+      if (isHospitality(building.type) && building.menu.length > 0) {
+        const active = building.menu.filter(item => item.enabled);
+        const weight = active.reduce((sum, item) => sum + item.popularity, 0) || 1;
+        const covers = totalSold; // one cover chooses one line
+        let menuRevenue = 0;
+        let menuCost = 0;
+        // Families follow the kids offer, so a kids box lifts total covers.
+        const kidsLines = active.filter(item => item.category === 'kids');
+        const kidsDraw = kidsLines.length > 0 ? 1 + city.familyShare * 0.45 : 1;
+        for (const item of active) {
+          const share = item.popularity / weight;
+          const itemCovers = covers * share * kidsDraw;
+          menuRevenue += itemCovers * item.price * building.pricingMultiplier;
+          menuCost += itemCovers * (item.foodCost + (item.includesToy ? KIDS_TOY_COST : 0));
+        }
+        totalRevenue = menuRevenue;
+        totalCogs = menuCost;
+        totalSold = covers * kidsDraw;
+      }
+
+      building.lastUnitsSold = totalSold;
+      building.expiredUnits = totalExpired;
+      building.cogs = totalCogs;
+      building.spoilageLoss = Math.max(0, totalExpired * (stocked[0]?.productionCost ?? 0));
       building.customerTraffic = localTraffic;
-      building.supply = available;
-      building.demand = desiredSales * 720;
-      building.utilization = Math.min(100, desiredSales / Math.max(0.01, building.capacity / 720) * 100);
-      building.revenue = unitsSold * product.currentPrice * building.pricingMultiplier;
-      building.operatingCost += (building.type === 'internet_ecommerce' ? 2200 / 720 : 0) + building.spoilageLoss;
-      if (available < building.inventoryCapacity * 0.15 && state.tick % 24 === 0) refreshBuildingSupply(state, building);
+      building.supply = totalSupply;
+      building.demand = totalDemand;
+      building.utilization = Math.min(100, (totalSold / Math.max(0.001, baseHourly * stocked.length)) * 100);
+      building.revenue = totalRevenue;
+      building.operatingCost += (building.type === 'internet_ecommerce' ? 3.1 : 0) + building.adBudget / 720;
+      if (!isHospitality(building.type) && needsRestock && state.tick % 24 === 0) {
+        refreshBuildingSupply(state, building);
+      }
     } else if (building.type === 'warehouse') {
+      // ── Tiered logistics: cold chain and hazmat command premium rates but cost
+      // more to run and only fill when the local product mix needs them. ──
       const stored = Object.values(building.inventory).reduce((sum, quantity) => sum + quantity, 0);
-      building.utilization = Math.min(100, stored / building.inventoryCapacity * 100);
+      const utilization = Math.min(100, stored / building.inventoryCapacity * 100);
+      building.utilization = utilization;
       building.supply = stored;
-      building.demand = building.inventoryCapacity * 0.65;
-      building.revenue = stored * 0.018;
+      const tierRate = building.warehouseTier === 'cold' ? 1.05 : building.warehouseTier === 'hazmat' ? 1.4 : 0.55;
+      const tierOpex = building.warehouseTier === 'cold' ? 0.55 : building.warehouseTier === 'hazmat' ? 0.8 : 0.15;
+      const contractPremium = 1 + building.trainingLevel * 0.03; // SLA quality lifts rates
+      const cityDemand = city.population / 4_000_000;
+      building.demand = building.inventoryCapacity * (0.4 + cityDemand * 0.35);
+      building.revenue = stored * tierRate * contractPremium + building.inventoryCapacity * 0.05;
+      building.operatingCost += building.inventoryCapacity * tierOpex / 720;
     } else if (building.type === 'apartment' || building.type === 'commercial') {
       const amenity = amenityScores(state, building, index);
       building.amenityCommunity = amenity.community;
@@ -1790,10 +2266,32 @@ function simulateBuildings(state: GameState, index: StateIndex): void {
       const densityPremium = 1 + Math.min(1.5, city.population / 4000000);
       // High demand lifts market rent and thus achievable revenue.
       const demandPremium = 1 + Math.max(-0.3, demandIndex * 0.006);
-      const targetOccupancy = Math.max(18, Math.min(100, 68 + demandIndex * 0.35 + locationScore * 0.28 - (building.rentMultiplier - 1) * 55));
+
+      // ── Local rent competition ──────────────────────────────────────────────
+      // Tenants shop the neighbourhood. If comparable buildings within ~12 tiles
+      // ask less per unit, this block loses occupancy; if it undercuts them, it
+      // fills up. Moving is disruptive, so the shift is gradual, not instant.
+      const comparables = queryRadius(index, building.x, building.y, 12)
+        .filter(other => other.id !== building.id && other.type === building.type && other.rentPerUnit > 0);
+      let rentCompetitiveness = 1;
+      if (comparables.length > 0) {
+        const areaAverage = comparables.reduce((sum, other) => sum + other.rentPerUnit, 0) / comparables.length;
+        if (areaAverage > 0 && building.rentPerUnit > 0) {
+          // Cheaper than the area → above 1; pricier → below 1. Housing demand is
+          // fairly elastic locally, so a 10% discount meaningfully shifts tenants.
+          rentCompetitiveness = Math.max(0.45, Math.min(1.6, Math.pow(areaAverage / building.rentPerUnit, 1.35)));
+        }
+      }
+
+      const targetOccupancy = Math.max(8, Math.min(100,
+        (68 + demandIndex * 0.35 + locationScore * 0.28) * rentCompetitiveness - (building.rentMultiplier - 1) * 30));
       building.occupancy += (targetOccupancy - building.occupancy) * 0.01;
       building.utilization = building.occupancy;
-      building.revenue = building.rentPerUnit * building.capacity * (building.occupancy / 100) * popularityPremium * densityPremium * demandPremium / 720;
+      // Vacancy friction: below 85% occupancy, broker commissions, fit-out and
+      // void periods eat a share of the rent roll.
+      const vacancyTurnoverCost = building.occupancy < 85 ? ((85 - building.occupancy) / 85) * 0.30 : 0;
+      building.revenue = building.rentPerUnit * building.capacity * (building.occupancy / 100)
+        * popularityPremium * densityPremium * demandPremium * (1 - vacancyTurnoverCost) / 720;
       building.landValue *= 1 + (state.economy.inflation + state.economy.gdpGrowth + state.economy.realEstateBubble * 0.04 + building.occupancy * 0.001) / 100 / (365 * 24);
       building.glowPhase += 0.01;
     } else if (building.type === 'media_tv' || building.type === 'media_radio' || building.type === 'media_newspaper') {
@@ -1828,7 +2326,16 @@ function simulateBuildings(state: GameState, index: StateIndex): void {
       building.operatingCost *= 1.8;
     }
 
-    building.profit = building.revenue - building.operatingCost;
+    // ── Employee satisfaction: pay relative to local market, training investment
+    // and how hard the site is being pushed. Feeds service quality above. ──
+    const payRatio = building.trainingBudget * 0.5 + 0.8;
+    const overwork = Math.max(0, building.utilization - 88) / 100;
+    const satisfactionTarget = Math.max(10, Math.min(100,
+      50 + (payRatio - 1) * 60 + building.trainingLevel * 3.2 - overwork * 90 + (building.condition - 60) * 0.15));
+    building.employeeSatisfaction += (satisfactionTarget - building.employeeSatisfaction) * 0.004;
+
+    // True margin: gross sales less cost of goods less operating expenses.
+    building.profit = building.revenue - building.cogs - building.operatingCost;
     building.condition = Math.max(20, building.condition - 0.0015);
   }
 }
@@ -1905,52 +2412,64 @@ function simulateStockMarket(state: GameState): void {
   }
 }
 
-function simulateGoals(state: GameState): void {
-  const player = state.companies.find(c => c.isPlayer);
-  if (!player) return;
-  for (const goal of state.goals) {
-    switch (goal.id) {
-      case 'g_firstMillion': goal.current = player.cash; break;
-      default: break;
-    }
-    if (goal.id === 'g_firstMillion' || goal.name === 'First Million') goal.current = player.cash;
-    if (goal.name === 'Empire Builder') goal.current = player.buildings.length;
-    if (goal.name === 'Billionaire') goal.current = player.marketCap;
-    if (goal.name === 'Multi-City') {
-      goal.current = new Set(state.buildings.filter(b => b.companyId === player.id).map(b => b.cityId)).size;
-    }
-    if (goal.name === 'Debt Free') goal.current = player.debt > 0 ? 0 : 1;
-    if (goal.name === 'Market Dominator') goal.current = Math.max(...state.products.map(product => product.playerMarketShare), 0);
-    if (goal.name === 'Innovator') goal.current = Math.max(...state.products.map(product => product.techLevel), 1);
-    if (goal.name === 'Media Mogul') {
-      goal.current = state.buildings.filter(b => b.companyId === player.id && b.type === 'media_tv').length;
-    }
-    if (!goal.completed && goal.current >= goal.target) {
-      goal.completed = true;
-      player.cash += goal.reward;
-      state.player.knowledgePoints += goal.knowledgeReward;
-      addNotification(state, {
-        id: generateId(),
-        message: `🎯 Goal completed: ${goal.name}! +$${(goal.reward / 1000).toFixed(0)}K reward`,
-        type: 'success',
-        tick: state.tick,
-      });
-    }
-  }
-}
-
 function simulateAICompany(state: GameState, company: Company): void {
   const companyBuildings = state.buildings.filter(b => b.companyId === company.id);
-  // Build occasionally
-  if (company.cash > 5000000 && Math.random() > (company.aiStrategy === 'aggressive' ? 0.7 : company.aiStrategy === 'conservative' ? 0.95 : 0.85)) {
-    const city = state.cities[Math.floor(Math.random() * state.cities.length)];
-    const types: BuildingType[] = ['retail_store', 'factory', 'apartment', 'commercial', 'farm', 'warehouse', 'rd_center', 'mine'];
-    const type = types[Math.floor(Math.random() * types.length)];
-    const building = createBuilding(type, company.id, city, state.products, state.tick);
-    if (company.cash >= building.constructionCost) {
-      company.cash -= building.constructionCost;
-      state.buildings.push(building);
-      company.buildings.push(building.id);
+
+  // ── Strategy-driven expansion ────────────────────────────────────────────
+  // The board screens cities and formats on observable ROI rather than guessing:
+  // it favours undersupplied markets, avoids saturated ones, and never opens a
+  // mine where there is no deposit or a factory with no route to inputs.
+  const appetite = company.aiStrategy === 'aggressive' ? 0.7 : company.aiStrategy === 'conservative' ? 0.95 : 0.85;
+  if (company.cash > 5_000_000 && Math.random() > appetite) {
+    const preferred: BuildingType[] = company.aiStrategy === 'aggressive'
+      ? ['retail_store', 'fast_food', 'cafe', 'restaurant', 'bar', 'factory']
+      : company.aiStrategy === 'conservative'
+        ? ['apartment', 'commercial', 'warehouse']
+        : ['retail_store', 'apartment', 'factory', 'warehouse', 'cafe', 'commercial'];
+
+    type Candidate = { city: City; type: BuildingType; score: number };
+    let best: Candidate | null = null;
+
+    for (const city of state.cities) {
+      const cityBuildings = state.buildings.filter(b => b.cityId === city.id);
+      const popM = city.population / 1_000_000;
+
+      for (const type of preferred) {
+        const existing = cityBuildings.filter(b => b.type === type).length;
+        // Saturation: how many outlets of this format the city can carry.
+        const carrying = type === 'apartment' ? 6 + popM * 3
+          : type === 'commercial' ? 4 + popM * 1.5
+          : type === 'warehouse' ? 2 + popM
+          : isHospitality(type) ? 4 + popM * 2.4
+          : 3 + popM * 2;
+        if (existing >= carrying) continue;
+        const headroom = 1 - existing / carrying;
+
+        // Format-specific demand read.
+        let demandSignal: number;
+        if (type === 'apartment') demandSignal = Math.max(0, -city.housingDemand) / 100;
+        else if (type === 'commercial') demandSignal = Math.max(0, -city.officeDemand) / 100;
+        else if (isHospitality(type)) demandSignal = (city.trafficLevel / 100) * (0.6 + city.familyShare);
+        else if (type === 'retail_store') demandSignal = (city.trafficLevel / 100) * (city.wageRate / 45);
+        else demandSignal = 0.4 + (state.economy.businessConfidence / 200);
+
+        // Cheap labour and land lift returns; wages hurt service formats most.
+        const costDrag = type === 'factory' || type === 'warehouse'
+          ? city.wageRate / 45
+          : (city.wageRate / 45) * 0.4;
+        const score = headroom * (0.5 + demandSignal) * (1.4 - costDrag) * (0.85 + Math.random() * 0.3);
+        if (!best || score > best.score) best = { city, type, score };
+      }
+    }
+
+    if (best && best.score > 0.25) {
+      const building = createBuilding(best.type, company.id, best.city, state.products, state.tick);
+      if (company.cash >= building.constructionCost) {
+        company.cash -= building.constructionCost;
+        state.buildings.push(building);
+        company.buildings.push(building.id);
+        invalidateRoadCache(best.city.id);
+      }
     }
   }
   for (const b of companyBuildings) {
@@ -1958,6 +2477,307 @@ function simulateAICompany(state: GameState, company: Company): void {
       b.trainingLevel = Math.min(9, b.trainingLevel + 1);
       company.cash -= 50000;
     }
+  }
+}
+
+/**
+ * Quarterly price review plus continuous competitive response.
+ *
+ * Every quarter each AI compares realised utilisation against a 70–85% target band
+ * and adjusts list prices. Between reviews it still reacts to undercutting rivals,
+ * defending share down to a hard margin floor — so price wars are real and mutual.
+ */
+function aiPriceResponse(state: GameState) {
+  const FLOOR = 0.68;   // ~32% gross margin — nobody trades below this for long
+  const CEILING = 1.55;
+
+  for (const company of state.companies) {
+    if (company.isPlayer) continue;
+    const dueForReview = state.tick >= company.nextPriceReviewTick;
+    if (dueForReview) company.nextPriceReviewTick = state.tick + 24 * 30 * 3; // next quarter
+
+    for (const building of state.buildings) {
+      if (building.companyId !== company.id) continue;
+      if (building.type !== 'retail_store' && building.type !== 'internet_ecommerce' && !isHospitality(building.type)) continue;
+      const product = state.products.find(p => p.id === building.productId);
+      if (!product) continue;
+
+      let target = building.pricingMultiplier;
+
+      // ── Quarterly review against the 70–85% utilisation band ──
+      if (dueForReview) {
+        if (building.utilization < 50) target *= 0.88;        // deep discount to fill the store
+        else if (building.utilization < 70) target *= 0.95;   // trim to reach the band
+        else if (building.utilization > 90) target *= 1.08;   // demand outstrips capacity
+        else if (building.utilization > 85) target *= 1.04;
+      }
+
+      // ── Continuous stock pressure ──
+      if (building.supply > building.demand * 0.5) target -= 0.04;
+      else if (building.supply < building.demand * 0.15) target += 0.03;
+
+      // ── Defend against undercutting, including by the player ──
+      const rivals = state.buildings.filter(b =>
+        b.id !== building.id && b.cityId === building.cityId && b.type === building.type &&
+        b.products.includes(product.id) && b.companyId !== company.id
+      );
+      const cheapestRival = rivals.reduce((min, r) => Math.min(min, r.pricingMultiplier), Infinity);
+      if (Number.isFinite(cheapestRival) && cheapestRival < building.pricingMultiplier - 0.04) {
+        // Aggressive boards undercut back; conservative ones merely match.
+        const response = company.aiStrategy === 'aggressive' ? 0.96 : 0.99;
+        target = Math.min(target, Math.max(FLOOR, cheapestRival * response));
+      }
+
+      building.pricingMultiplier = Math.max(FLOOR, Math.min(CEILING,
+        building.pricingMultiplier + (target - building.pricingMultiplier) * 0.5));
+    }
+  }
+}
+
+/**
+ * Competitive intelligence. Boards track the player's share by product and city;
+ * a jump of more than 15 points in a quarter triggers a defensive package:
+ * price cuts on the contested line, extra advertising, and a new store on the turf.
+ */
+function aiCompetitiveResponse(state: GameState, index: StateIndex) {
+  const player = state.companies.find(c => c.isPlayer);
+  if (!player) return;
+
+  for (const company of state.companies) {
+    if (company.isPlayer) continue;
+
+    for (const building of index.buildingsByCompany.get(company.id) ?? []) {
+      if (building.type !== 'retail_store' && !isHospitality(building.type)) continue;
+      const productId = building.productId;
+      if (!productId) continue;
+      const key = `${productId}|${building.cityId}`;
+
+      const localRivals = (index.buildingsByCity.get(building.cityId) ?? [])
+        .filter(b => b.products.includes(productId));
+      const playerOutlets = localRivals.filter(b => b.companyId === player.id).length;
+      const share = localRivals.length > 0 ? (playerOutlets / localRivals.length) * 100 : 0;
+
+      const previous = company.observedPlayerShare[key] ?? share;
+      company.observedPlayerShare[key] = share;
+      if (share - previous <= 15) continue;
+
+      // Defensive package — price, promotion, and presence.
+      building.pricingMultiplier = Math.max(0.7, building.pricingMultiplier * 0.93);
+      building.adBudget = Math.min(120_000, building.adBudget + 25_000);
+
+      const city = index.citiesById.get(building.cityId);
+      if (city && company.cash > 8_000_000 && Math.random() > 0.55) {
+        const defender = createBuilding(building.type, company.id, city, state.products, state.tick);
+        if (company.cash >= defender.constructionCost) {
+          company.cash -= defender.constructionCost;
+          defender.productId = productId;
+          defender.products = [productId];
+          state.buildings.push(defender);
+          company.buildings.push(defender.id);
+          addNewsTicker(state, `${company.name} opens a new outlet in ${city.name} to defend market share`, 'warning');
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Closure review. A site that loses money for twelve straight months is compared
+ * on NPV: keep bleeding, or take the demolition refund and redeploy the capital.
+ */
+function aiCloseUnprofitable(state: GameState, index: StateIndex) {
+  for (const company of state.companies) {
+    if (company.isPlayer) continue;
+    for (const building of [...(index.buildingsByCompany.get(company.id) ?? [])]) {
+      if (building.type === 'hq') continue;
+      const monthlyProfit = building.profit * 24 * 30;
+      if (monthlyProfit < 0) building.monthsUnprofitable += 1;
+      else building.monthsUnprofitable = Math.max(0, building.monthsUnprofitable - 1);
+      if (building.monthsUnprofitable < 12) continue;
+
+      // NPV of three more years of losses vs the salvage value today.
+      const npvOfOperating = monthlyProfit * 36 * 0.82;
+      const salvage = building.constructionCost * 0.4 + building.landValue * 0.9;
+      if (npvOfOperating >= salvage) { building.monthsUnprofitable = 0; continue; }
+
+      company.cash += salvage;
+      company.buildings = company.buildings.filter(id => id !== building.id);
+      state.buildings = state.buildings.filter(b => b.id !== building.id);
+      invalidateRoadCache(building.cityId);
+      addNewsTicker(state, `${company.name} shutters a loss-making ${building.name.toLowerCase()} after a year of red ink`, 'info');
+    }
+  }
+}
+
+/**
+ * Global diesel market. Real diesel ran $1.50 (2020) → $5.50 (2022) → $3.80 (2024),
+ * so the price follows a mean-reverting walk with occasional geopolitical spikes
+ * that decay over roughly six months.
+ */
+function updateFuelMarket(state: GameState) {
+  const fuel = state.economy;
+  const longRun = 3.4 * (1 + fuel.inflation / 100);
+  // Mean reversion plus month-to-month noise.
+  fuel.dieselPrice += (longRun - fuel.dieselPrice) * 0.06 + (Math.random() - 0.5) * 0.18;
+
+  // Shock decay.
+  if (fuel.fuelShockMonths > 0) {
+    fuel.fuelShockMonths -= 1;
+    if (fuel.fuelShockMonths === 0) {
+      addNewsTicker(state, 'Energy markets normalise as supply disruption eases', 'info');
+    }
+  } else if (Math.random() < 0.012) {
+    // ~1.2% chance per month of a supply crisis.
+    const events = [
+      'Middle East tension disrupts crude shipping lanes',
+      'Refinery outages tighten distillate supply',
+      'Export embargo announced on key producing nation',
+      'Hurricane season shuts Gulf Coast refining capacity',
+    ];
+    fuel.fuelShockMonths = 4 + Math.floor(Math.random() * 4);
+    fuel.dieselPrice *= 1.35 + Math.random() * 0.2;
+    addNewsTicker(state, `${events[Math.floor(Math.random() * events.length)]} — diesel spikes to $${fuel.dieselPrice.toFixed(2)}/gal`, 'breaking');
+    addNotification(state, {
+      id: generateId(),
+      message: `Fuel crisis: diesel at $${fuel.dieselPrice.toFixed(2)}/gal. Freight costs across your network will rise sharply.`,
+      type: 'warning',
+      tick: state.tick,
+    });
+  }
+  fuel.dieselPrice = Math.max(1.4, Math.min(7.5, fuel.dieselPrice));
+}
+
+/**
+ * Reputation lags reality. Quality improvements take months to register with
+ * consumers, and a quality collapse damages reviews long after the fix.
+ */
+function updateProductPerception(state: GameState) {
+  for (const product of state.products) {
+    // Perception drifts toward the true stat, but slowly and asymmetrically:
+    // bad news travels faster than good.
+    const gap = product.quality - product.perceivedQuality;
+    const speed = gap < 0 ? 0.22 : 0.09;
+    product.perceivedQuality += gap * speed;
+
+    // Reviews track perceived quality and value for money.
+    const valueScore = product.perceivedQuality / 100 * 3 + (product.brand / 100) * 1.2 + 0.8;
+    product.reviewScore += (Math.max(1, Math.min(5, valueScore)) - product.reviewScore) * 0.15;
+  }
+}
+
+/**
+ * Trade credit settlement. B2B trade runs on net-30/60 terms, so cash lands
+ * a month or two after the goods move. Working capital timing becomes strategic.
+ */
+function settleTradeCredit(state: GameState) {
+  for (const company of state.companies) {
+    const due = company.credit.filter(entry => entry.dueTick <= state.tick);
+    if (due.length === 0) continue;
+    for (const entry of due) {
+      if (entry.kind === 'receivable') company.cash += entry.amount;
+      else company.cash -= entry.amount;
+    }
+    company.credit = company.credit.filter(entry => entry.dueTick > state.tick);
+  }
+}
+
+/** National brand awareness grows with footprint and ad spend, and decays without them. */
+function updateBrandAwareness(state: GameState, index: StateIndex) {
+  for (const company of state.companies) {
+    const outlets = (index.buildingsByCompany.get(company.id) ?? [])
+      .filter(b => b.type === 'retail_store' || isHospitality(b.type));
+    const adSpend = outlets.reduce((sum, b) => sum + b.adBudget, 0);
+    // Word of mouth: each store contributes with diminishing returns; ads accelerate it.
+    const reachTarget = Math.min(100, Math.log10(1 + outlets.length) * 38 + adSpend / 25_000);
+    company.brandAwareness += (reachTarget - company.brandAwareness) * 0.08;
+    company.brandAwareness = Math.max(0, Math.min(100, company.brandAwareness - 0.4));
+  }
+}
+
+/**
+ * Insolvent firms get three months to recover. After that, lenders force
+ * liquidation: assets are sold to the deepest-pocketed rival at a distressed
+ * discount, or scrapped if nobody bids. Markets clear — companies die.
+ */
+function simulateBankruptcy(state: GameState) {
+  for (let i = state.companies.length - 1; i >= 0; i--) {
+    const company = state.companies[i];
+    if (company.isPlayer) continue; // the player faces a different screen in a fuller build
+    if (company.cash < 0) {
+      company.monthsInDistress += 1;
+      if (company.monthsInDistress === 1) {
+        addNewsTicker(state, `${company.name} warns of liquidity strain — creditors are circling`, 'warning');
+      }
+      if (company.monthsInDistress < 3) continue;
+
+      // Liquidation: rivals bid 55% of book value for each asset.
+      const buyers = state.companies.filter(c => c.id !== company.id && c.cash > 2_000_000);
+      let recovered = 0;
+      for (const building of state.buildings.filter(b => b.companyId === company.id)) {
+        const bidder = buyers
+          .filter(b => b.cash > 500_000)
+          .sort((a, b) => b.cash - a.cash)[0];
+        const salvage = (building.landValue + building.constructionCost * 0.3) * 0.55;
+        if (bidder && salvage > 0) {
+          const price = Math.min(bidder.cash * 0.4, salvage);
+          bidder.cash -= price;
+          bidder.buildings.push(building.id);
+          building.companyId = bidder.id;
+          recovered += price;
+        } else {
+          state.buildings = state.buildings.filter(b => b.id !== building.id);
+        }
+      }
+      company.cash += recovered;
+      addNewsTicker(state, `${company.name} enters liquidation — assets sold for $${(recovered / 1_000_000).toFixed(1)}M`, 'breaking');
+      addNotification(state, { id: generateId(), message: `${company.name} has gone bankrupt and left the market.`, type: 'warning', tick: state.tick });
+
+      // Wind up: clear ownership records and retire the firm from the market.
+      company.buildings = [];
+      state.bonds = state.bonds.filter(b => b.issuerId !== company.id);
+      state.companies.splice(i, 1);
+    } else {
+      company.monthsInDistress = 0;
+    }
+  }
+}
+
+/**
+ * Rivals with spare cash and a matching strategy poach discontented staff.
+ * Loyalty below 50 is a standing invitation; the raider pays a signing bonus
+ * equal to one year's salary, mirroring the player's own headhunting rules.
+ */
+function simulatePoaching(state: GameState) {
+  if (state.digitalAge.talentSystem === 'greatly_simplified') return;
+  const raiders = state.companies.filter(c => !c.isPlayer && c.cash > 10_000_000 && c.aiStrategy !== 'conservative');
+  if (raiders.length === 0) return;
+
+  for (const talent of state.talents) {
+    if (talent.employerId === null) continue;
+    const employer = state.companies.find(c => c.id === talent.employerId);
+    if (!employer || !employer.isPlayer) continue; // rivals don't poach each other here
+    if (talent.loyalty >= 50) continue;
+    if (Math.random() > 0.12) continue;
+
+    const raider = raiders[Math.floor(Math.random() * raiders.length)];
+    const bonus = talent.salary;
+    if (raider.cash < bonus + talent.salary / 12) continue;
+
+    const building = state.buildings.find(b => b.id === talent.buildingId);
+    raider.cash -= bonus;
+    talent.employerId = raider.id;
+    talent.buildingId = null;
+    talent.salary = Math.round(talent.salary * 1.2);
+    talent.loyalty = 65;
+    if (building) building.talentIds = building.talentIds.filter(id => id !== talent.id);
+
+    addNotification(state, {
+      id: generateId(),
+      message: `${raider.name} poached ${talent.name} (${talent.specialization}, skill ${talent.skill.toFixed(0)}) with a $${(bonus / 1_000_000).toFixed(2)}M signing bonus. Raise salaries to hold your people.`,
+      type: 'danger',
+      tick: state.tick,
+    });
+    break; // one raid per month keeps the noise sane
   }
 }
 
@@ -2048,6 +2868,7 @@ export function buildBuilding(state: GameState, type: BuildingType, x: number, y
       building.products = [matchingProduct.id];
     }
   }
+  building.highwayAccess = computeHighwayAccess(state, building);
   playerCompany.cash -= landCost;
   state.buildings.push(building);
   playerCompany.buildings.push(building.id);
@@ -2214,6 +3035,9 @@ export function upgradeBuilding(state: GameState, buildingId: string): GameState
   building.employees = Math.floor(building.employees * 1.12);
   building.trainingLevel = Math.min(9, building.trainingLevel + 1);
   building.condition = 100;
+  if (building.type === 'retail_store' || building.type === 'internet_ecommerce') {
+    building.productSlots += 2;
+  }
   addNotification(state, {
     id: generateId(),
     message: `Upgraded ${building.name} to level ${building.level}`,
@@ -2241,11 +3065,71 @@ export function configureBuildingProduct(state: GameState, buildingId: string, p
   const building = state.buildings.find(item => item.id === buildingId);
   const product = state.products.find(item => item.id === productId);
   if (!building || !product || state.year < product.unlockYear) return state;
-  building.productId = productId;
-  building.products = [productId];
+  const isShop = building.type === 'retail_store' || building.type === 'internet_ecommerce';
+  if (isShop) {
+    if (building.products.includes(productId)) return state;
+    if (building.products.length >= building.productSlots) {
+      addNotification(state, { id: generateId(), message: `All ${building.productSlots} shelf slots are filled. Upgrade the store to stock more lines.`, type: 'warning', tick: state.tick });
+      return state;
+    }
+    building.products.push(productId);
+    if (!building.productId) building.productId = productId;
+  } else {
+    building.productId = productId;
+    building.products = [productId];
+    building.inventory = {};
+  }
   building.supplierLinks = [];
-  building.inventory = {};
   refreshBuildingSupply(state, building);
+  return state;
+}
+
+export function removeRetailProduct(state: GameState, buildingId: string, productId: string): GameState {
+  const building = state.buildings.find(item => item.id === buildingId);
+  if (!building) return state;
+  building.products = building.products.filter(id => id !== productId);
+  if (building.productId === productId) building.productId = building.products[0] ?? null;
+  building.supplierLinks = [];
+  refreshBuildingSupply(state, building);
+  return state;
+}
+
+/** Reprice a single menu line. Margin discipline is the player's problem. */
+export function setMenuItemPrice(state: GameState, buildingId: string, itemId: string, price: number): GameState {
+  const building = state.buildings.find(item => item.id === buildingId);
+  const item = building?.menu.find(m => m.id === itemId);
+  if (item) item.price = Math.max(0.25, price);
+  return state;
+}
+
+/** Toggle a menu line on or off the board. */
+export function toggleMenuItem(state: GameState, buildingId: string, itemId: string): GameState {
+  const building = state.buildings.find(item => item.id === buildingId);
+  const item = building?.menu.find(m => m.id === itemId);
+  if (item) item.enabled = !item.enabled;
+  return state;
+}
+
+/** Local advertising spend for a single site — feeds national brand awareness. */
+export function setAdBudget(state: GameState, buildingId: string, monthlyBudget: number): GameState {
+  const building = state.buildings.find(item => item.id === buildingId);
+  if (building) building.adBudget = Math.max(0, Math.min(150_000, monthlyBudget));
+  return state;
+}
+
+export function setWarehouseTier(state: GameState, buildingId: string, tier: Building['warehouseTier']): GameState {
+  const building = state.buildings.find(item => item.id === buildingId);
+  if (!building || building.type !== 'warehouse') return state;
+  // Retooling a facility costs capital and takes the floor offline briefly.
+  const retoolCost = tier === 'hazmat' ? 900_000 : tier === 'cold' ? 600_000 : 150_000;
+  const company = state.companies.find(c => c.isPlayer);
+  if (company && company.cash < retoolCost) {
+    addNotification(state, { id: generateId(), message: `Retooling to ${tier} storage needs $${(retoolCost / 1_000_000).toFixed(2)}M.`, type: 'danger', tick: state.tick });
+    return state;
+  }
+  if (company) company.cash -= retoolCost;
+  building.warehouseTier = tier;
+  addNotification(state, { id: generateId(), message: `Warehouse retooled for ${tier} storage.`, type: 'success', tick: state.tick });
   return state;
 }
 
@@ -2263,10 +3147,29 @@ export function optimizeAllSupply(state: GameState): GameState {
   return state;
 }
 
+/** Raw commodities and unprocessed farm output are fungible — branding cannot apply. */
+export function isBrandable(product: Product): boolean {
+  return product.kind === 'consumer' || product.kind === 'digital';
+}
+
+/** Only manufactured and digital goods carry process technology worth licensing. */
+export function isResearchable(product: Product): boolean {
+  return product.kind === 'consumer' || product.kind === 'digital' || product.kind === 'semi';
+}
+
 export function fundAdvertising(state: GameState, productId: string, amount: number): GameState {
   const company = state.companies.find(item => item.isPlayer);
   const product = state.products.find(item => item.id === productId);
   if (!company || !product || company.cash < amount) return state;
+  if (!isBrandable(product)) {
+    addNotification(state, {
+      id: generateId(),
+      message: `${product.name} is a fungible commodity traded on price and grade — advertising cannot build a brand for it.`,
+      type: 'warning',
+      tick: state.tick,
+    });
+    return state;
+  }
   company.cash -= amount;
   const mediaEfficiency = 1 + state.buildings.filter(building => building.companyId === company.id && (building.type.startsWith('media_') || building.type.startsWith('internet_'))).length * 0.08;
   product.brand = Math.min(100, product.brand + amount / 250000 * mediaEfficiency);
@@ -2282,13 +3185,37 @@ export function acquireTechnology(state: GameState, productId: string): GameStat
     addNotification(state, { id: generateId(), message: 'A CEO office in your headquarters is required to acquire technology.', type: 'warning', tick: state.tick });
     return state;
   }
+  if (!isResearchable(product)) {
+    addNotification(state, {
+      id: generateId(),
+      message: `${product.name} is extracted or grown, not engineered. There is no process technology to license — invest in better deposits, land or training instead.`,
+      type: 'warning',
+      tick: state.tick,
+    });
+    return state;
+  }
   const targetTech = product.techLevel + 3;
   const cost = product.productionCost * targetTech * 4200;
-  if (company.cash < cost) return state;
+  if (company.cash < cost) {
+    addNotification(state, {
+      id: generateId(),
+      message: `Technology licence for ${product.name} costs $${(cost / 1_000_000).toFixed(2)}M — insufficient cash.`,
+      type: 'danger',
+      tick: state.tick,
+    });
+    return state;
+  }
+  const previousTech = product.techLevel;
   company.cash -= cost;
   product.techLevel = targetTech;
   product.quality = Math.min(100, product.quality + 4);
   company.intangibleTechnology += cost * 0.7;
+  addNotification(state, {
+    id: generateId(),
+    message: `Licensed ${product.name} technology for $${(cost / 1_000_000).toFixed(2)}M — tech level ${previousTech.toFixed(1)} → ${targetTech.toFixed(1)}, quality +4.`,
+    type: 'success',
+    tick: state.tick,
+  });
   addNewsTicker(state, `${company.name} acquires external ${product.name} technology`, 'info');
   return state;
 }
@@ -2455,16 +3382,86 @@ export function sellLand(state: GameState, holdingId: string): GameState {
 
 // ============= BUILDING ACQUISITIONS =============
 
+const TICKS_PER_MONTH = 24 * 30;
+const MAX_OFFER_ROUNDS = 3;
+
 /**
- * Makes an offer for an AI-owned building. The seller's AI evaluates EBITDA multiple,
- * replacement cost, strategy temperament and cash hunger before answering:
- * below ~70% of asking price is refused outright, 70–99% triggers a counter-offer,
- * and >= asking closes the deal immediately.
+ * Discounted-cash-flow valuation of a single asset.
+ *
+ * Value = replacement cost (depreciated) + land + DCF of forward NOI,
+ * discounted at the prevailing risk-free rate plus an asset-risk premium.
+ * The result drifts with interest rates, occupancy, inflation and the
+ * seller's own liquidity, so no two quotes are ever identical.
+ */
+export function getAskingPrice(state: GameState, buildingId: string): number | null {
+  const building = state.buildings.find(item => item.id === buildingId);
+  if (!building || building.companyId === 'system') return null;
+  const seller = state.companies.find(item => item.id === building.companyId);
+  if (!seller || seller.isPlayer) return null;
+  return valueAsset(state, building, seller);
+}
+
+function valueAsset(state: GameState, building: Building, owner: Company): number {
+  const annualNOI = building.profit * 24 * 365;
+  // Discount rate = risk-free + asset risk premium; capped to sane bounds.
+  const riskPremium = building.type === 'apartment' || building.type === 'commercial' ? 3.0
+    : isHospitality(building.type) ? 7.5
+    : building.type === 'factory' || building.type === 'mine' ? 6.5 : 5.0;
+  const discountRate = Math.max(0.045, (state.economy.interestRate + riskPremium) / 100);
+  // Perpetuity capped at 12 years of earnings so loss-makers aren't valued at zero.
+  const dcf = annualNOI > 0 ? Math.min(annualNOI / discountRate, annualNOI * 12) : 0;
+  const depreciation = Math.max(0.35, building.condition / 100);
+  const replacement = building.constructionCost * depreciation * 0.6 + building.landValue;
+
+  const strategyGreed = owner.aiStrategy === 'aggressive' ? 1.28 : owner.aiStrategy === 'conservative' ? 0.97 : 1.12;
+  const liquidityPressure = owner.cash < 4_000_000 ? 0.84 : owner.cash > 60_000_000 ? 1.12 : 1;
+  // Sellers hold out harder in booms and capitulate in recessions.
+  const cyclePremium = state.economy.cycle === 'boom' ? 1.15
+    : state.economy.cycle === 'recession' ? 0.88
+    : state.economy.cycle === 'recovery' ? 1.03 : 1;
+  // Occupancy/utilisation is visible evidence of quality.
+  const performancePremium = 0.85 + Math.min(0.4, building.utilization / 250);
+  // Each rejected round hardens the board's position (anchoring effect).
+  const negotiationFatigue = 1 + building.offersMade * 0.035;
+
+  // The board's drift term carries month-to-month momentum: rising demand, thin
+  // competition and a hot cycle push the ask up; oversupply and distress push it down.
+  const ask = (replacement + dcf) * strategyGreed * liquidityPressure * cyclePremium
+    * performancePremium * negotiationFatigue * (1 + building.askDrift);
+  building.cachedAsk = Math.max(120_000, ask);
+  return building.cachedAsk;
+}
+
+/** Monthly re-rating of every tradeable asset's asking price. */
+function driftAskingPrices(state: GameState) {
+  const cityDemand = new Map<string, number>();
+  for (const city of state.cities) {
+    cityDemand.set(city.id, Math.max(-1, Math.min(1, (-city.housingDemand - city.officeDemand) / 100)));
+  }
+  for (const building of state.buildings) {
+    if (building.companyId === 'system' || building.companyId === state.companies.find(c => c.isPlayer)?.id) continue;
+    const demandSignal = cityDemand.get(building.cityId) ?? 0;
+    // Competition: more identical rivals nearby depress the seller's leverage.
+    const rivals = state.buildings.filter(b => b.id !== building.id && b.cityId === building.cityId && b.type === building.type).length;
+    const competitionDrag = Math.min(0.02, rivals * 0.004);
+    const utilisationPush = (building.utilization - 55) / 100 * 0.02;
+    const cyclePush = state.economy.cycle === 'boom' ? 0.012 : state.economy.cycle === 'recession' ? -0.018 : 0.002;
+    const noise = (Math.random() - 0.5) * 0.015;
+    building.askDrift = Math.max(-0.35, Math.min(0.45,
+      building.askDrift * 0.85 + demandSignal * 0.012 + utilisationPush - competitionDrag + cyclePush + noise));
+    building.cachedAsk = 0; // force recompute on next quote
+  }
+}
+
+/**
+ * Player bids for an AI-owned asset. Sellers allow only a handful of rounds,
+ * and lowball bids below 55% of book value end talks for three months.
  */
 export function makePurchaseOffer(state: GameState, buildingId: string, offerAmount: number): GameState {
   const building = state.buildings.find(item => item.id === buildingId);
   const player = state.companies.find(item => item.isPlayer);
   if (!building || !player || building.companyId === player.id) return state;
+
   if (building.companyId === 'system') {
     state.lastOffer = { buildingId, status: 'rejected', offerAmount, counterAmount: 0, message: 'Public infrastructure is not for sale.', sellerName: 'City Government' };
     return state;
@@ -2472,22 +3469,36 @@ export function makePurchaseOffer(state: GameState, buildingId: string, offerAmo
   const seller = state.companies.find(item => item.id === building.companyId);
   if (!seller) return state;
 
-  // AI valuation: replacement cost + 3 years of forward NOI + land gain.
-  const annualProfit = building.profit * 720 * 30 * 12;
-  const incomeValue = Math.max(0, annualProfit * 3);
-  const assetValue = building.landValue + building.constructionCost * 0.55;
-  const strategyGreed = seller.aiStrategy === 'aggressive' ? 1.35 : seller.aiStrategy === 'conservative' ? 0.95 : 1.15;
-  // Cash-hungry sellers discount; cash-rich sellers hold out.
-  const liquidityPressure = seller.cash < 5000000 ? 0.82 : seller.cash > 50000000 ? 1.1 : 1;
-  const askingPrice = Math.max(50000, (assetValue + incomeValue) * strategyGreed * liquidityPressure);
+  if (state.tick < building.negotiationBlockedUntil) {
+    const monthsLeft = Math.max(1, Math.ceil((building.negotiationBlockedUntil - state.tick) / TICKS_PER_MONTH));
+    state.lastOffer = {
+      buildingId, status: 'rejected', offerAmount, counterAmount: building.cachedAsk,
+      message: `${seller.name} has broken off talks. Their board will not revisit this asset for another ${monthsLeft} month${monthsLeft > 1 ? 's' : ''}.`,
+      sellerName: seller.name,
+    };
+    return state;
+  }
+
+  const askingPrice = valueAsset(state, building, seller);
 
   if (player.cash < offerAmount) {
     state.lastOffer = { buildingId, status: 'rejected', offerAmount, counterAmount: askingPrice, message: 'You lack the cash to finance this offer.', sellerName: seller.name };
     return state;
   }
 
+  // Insulting lowball: talks close for three months.
+  if (offerAmount < askingPrice * 0.55) {
+    building.negotiationBlockedUntil = state.tick + TICKS_PER_MONTH * 3;
+    building.offersMade = 0;
+    state.lastOffer = {
+      buildingId, status: 'rejected', offerAmount, counterAmount: askingPrice,
+      message: `${seller.name} considers $${(offerAmount / 1_000_000).toFixed(2)}M insulting for an asset they value at $${(askingPrice / 1_000_000).toFixed(2)}M. Negotiations are closed for three months.`,
+      sellerName: seller.name,
+    };
+    return state;
+  }
+
   if (offerAmount >= askingPrice) {
-    // Deal closes — ownership transfers.
     player.cash -= offerAmount;
     seller.cash += offerAmount;
     seller.buildings = seller.buildings.filter(id => id !== buildingId);
@@ -2495,35 +3506,117 @@ export function makePurchaseOffer(state: GameState, buildingId: string, offerAmo
     building.companyId = player.id;
     building.standingOffer = null;
     building.standingOfferBy = null;
-    state.lastOffer = { buildingId, status: 'accepted', offerAmount, counterAmount: 0, message: `${seller.name} accepted your offer of $${(offerAmount / 1000000).toFixed(2)}M for ${building.name}.`, sellerName: seller.name };
-    addNewsTicker(state, `${player.name} acquires ${building.name} from ${seller.name} for $${(offerAmount / 1000000).toFixed(2)}M`, 'breaking');
+    building.offersMade = 0;
+    building.negotiationBlockedUntil = 0;
+    state.lastOffer = { buildingId, status: 'accepted', offerAmount, counterAmount: 0, message: `${seller.name} accepted your offer of $${(offerAmount / 1_000_000).toFixed(2)}M for ${building.name}.`, sellerName: seller.name };
+    addNotification(state, { id: generateId(), message: `Acquired ${building.name} from ${seller.name} for $${(offerAmount / 1_000_000).toFixed(2)}M`, type: 'success', tick: state.tick });
+    addNewsTicker(state, `${player.name} acquires ${building.name} from ${seller.name} for $${(offerAmount / 1_000_000).toFixed(2)}M`, 'breaking');
     invalidateRoadCache(building.cityId);
     return state;
   }
 
-  if (offerAmount >= askingPrice * 0.7) {
-    state.lastOffer = { buildingId, status: 'counter', offerAmount, counterAmount: askingPrice, message: `${seller.name} counters at $${(askingPrice / 1000000).toFixed(2)}M. The board believes the asset's earnings justify it.`, sellerName: seller.name };
-  } else {
-    state.lastOffer = { buildingId, status: 'rejected', offerAmount, counterAmount: askingPrice, message: `${seller.name} is not interested. Their board values the asset at $${(askingPrice / 1000000).toFixed(2)}M.`, sellerName: seller.name };
-  }
+  building.offersMade += 1;
   building.standingOffer = offerAmount;
   building.standingOfferBy = player.id;
+
+  // Each board has its own patience (2–4 rounds). No round counts are shown to the
+  // player — they only learn the talks collapsed when the board finally walks away.
+  if (building.offersMade >= seller.maxOfferRounds) {
+    building.negotiationBlockedUntil = state.tick + TICKS_PER_MONTH * 3;
+    building.offersMade = 0;
+    state.lastOffer = {
+      buildingId, status: 'rejected', offerAmount, counterAmount: askingPrice,
+      message: `${seller.name} has ended negotiations — their board sees no path to agreement and will not reconsider for three months.`,
+      sellerName: seller.name,
+    };
+    return state;
+  }
+
+  state.lastOffer = {
+    buildingId, status: 'counter', offerAmount, counterAmount: askingPrice,
+    message: `${seller.name} counters at $${(askingPrice / 1_000_000).toFixed(2)}M.`,
+    sellerName: seller.name,
+  };
   return state;
 }
 
-/** Returns the seller AI's silent asking price for UI display. */
-export function getAskingPrice(state: GameState, buildingId: string): number | null {
-  const building = state.buildings.find(item => item.id === buildingId);
-  if (!building || building.companyId === 'system') return null;
-  const seller = state.companies.find(item => item.id === building.companyId);
+/** Monthly pass where AI firms bid for the player's assets at a fair, non-inflated price. */
+function simulateIncomingOffers(state: GameState) {
   const player = state.companies.find(item => item.isPlayer);
-  if (!seller || seller.isPlayer || player?.id === seller.id) return null;
-  const annualProfit = building.profit * 720 * 30 * 12;
-  const incomeValue = Math.max(0, annualProfit * 3);
-  const assetValue = building.landValue + building.constructionCost * 0.55;
-  const strategyGreed = seller.aiStrategy === 'aggressive' ? 1.35 : seller.aiStrategy === 'conservative' ? 0.95 : 1.15;
-  const liquidityPressure = seller.cash < 5000000 ? 0.82 : seller.cash > 50000000 ? 1.1 : 1;
-  return Math.max(50000, (assetValue + incomeValue) * strategyGreed * liquidityPressure);
+  if (!player) return;
+
+  // Expire stale bids first.
+  state.incomingOffers = state.incomingOffers.filter(offer => offer.expiresTick > state.tick);
+  if (state.incomingOffers.length >= 3) return;
+
+  const playerAssets = state.buildings.filter(b => b.companyId === player.id && b.type !== 'hq');
+  if (playerAssets.length === 0) return;
+
+  const bidders = state.companies.filter(c => !c.isPlayer && c.cash > 3_000_000);
+  if (bidders.length === 0) return;
+
+  const target = playerAssets[Math.floor(Math.random() * playerAssets.length)];
+  if (state.incomingOffers.some(offer => offer.buildingId === target.id)) return;
+
+  const buyer = bidders[Math.floor(Math.random() * bidders.length)];
+  const fairValue = valueAsset(state, target, buyer);
+
+  // Buyers bid 88%–108% of fair value — a realistic band, never wildly overpriced.
+  const bidRatio = 0.88 + Math.random() * 0.20;
+  const amount = Math.round(fairValue * bidRatio);
+  if (buyer.cash < amount) return;
+
+  const rationale = target.type === 'apartment' || target.type === 'commercial'
+    ? `${buyer.name} is consolidating rental stock in this district.`
+    : isHospitality(target.type)
+      ? `${buyer.name} wants to fold this venue into their hospitality chain.`
+      : target.utilization > 65
+        ? `${buyer.name} has identified this as a high-utilisation asset worth owning.`
+        : `${buyer.name} believes they can run this asset better than you can.`;
+
+  state.incomingOffers.push({
+    id: generateId(),
+    buildingId: target.id,
+    buildingName: target.name,
+    buyerId: buyer.id,
+    buyerName: buyer.name,
+    amount,
+    fairValue,
+    expiresTick: state.tick + TICKS_PER_MONTH * 2,
+    rationale,
+  });
+
+  addNotification(state, {
+    id: generateId(),
+    message: `${buyer.name} has offered $${(amount / 1_000_000).toFixed(2)}M for your ${target.name}.`,
+    type: 'info',
+    tick: state.tick,
+  });
+}
+
+export function acceptIncomingOffer(state: GameState, offerId: string): GameState {
+  const offer = state.incomingOffers.find(item => item.id === offerId);
+  const player = state.companies.find(item => item.isPlayer);
+  const building = state.buildings.find(item => item.id === offer?.buildingId);
+  const buyer = state.companies.find(item => item.id === offer?.buyerId);
+  if (!offer || !player || !building || !buyer) return state;
+
+  buyer.cash -= offer.amount;
+  player.cash += offer.amount;
+  player.buildings = player.buildings.filter(id => id !== building.id);
+  buyer.buildings.push(building.id);
+  building.companyId = buyer.id;
+  state.incomingOffers = state.incomingOffers.filter(item => item.id !== offerId);
+
+  addNotification(state, { id: generateId(), message: `Sold ${building.name} to ${buyer.name} for $${(offer.amount / 1_000_000).toFixed(2)}M`, type: 'success', tick: state.tick });
+  addNewsTicker(state, `${buyer.name} acquires ${building.name} from ${player.name} for $${(offer.amount / 1_000_000).toFixed(2)}M`, 'breaking');
+  invalidateRoadCache(building.cityId);
+  return state;
+}
+
+export function rejectIncomingOffer(state: GameState, offerId: string): GameState {
+  state.incomingOffers = state.incomingOffers.filter(item => item.id !== offerId);
+  return state;
 }
 
 export function completeScouting(state: GameState): GameState {

@@ -168,12 +168,8 @@ export default function GameCanvas({
         <span className="text-gray-400">|</span>
         <span>{gameState.season}</span>
       </div>
-      {/* Compass / rotation indicator */}
-      <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-sm rounded-full w-12 h-12 flex items-center justify-center text-white text-xs font-bold z-20">
-        N
-      </div>
       {hoveredMapTile && (
-        <div className="pointer-events-none absolute bottom-4 left-20 min-w-56 rounded-lg border border-slate-700 bg-slate-950/88 px-3 py-2 text-[10px] text-slate-300 shadow-xl backdrop-blur-sm">
+        <div className="pointer-events-none absolute bottom-4 left-4 min-w-56 rounded-lg border border-slate-700 bg-slate-950/88 px-3 py-2 text-[10px] text-slate-300 shadow-xl backdrop-blur-sm">
           <div className="flex items-center justify-between gap-4"><span className="font-bold uppercase tracking-widest text-white">Plot {hoveredMapTile.x}, {hoveredMapTile.y}</span><span className="capitalize text-emerald-400">{hoveredMapTile.type}</span></div>
           <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5">
             <span className="text-slate-500">Land value</span><span className="text-right font-mono">${(hoveredMapTile.landValue * 2200).toFixed(0)}/tile</span>

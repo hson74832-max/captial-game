@@ -111,7 +111,6 @@ export default function TopBar({ gameState, onSpeedChange, onPauseToggle, onPane
           { id: 'research', icon: 'RD', label: 'R&D' },
           { id: 'executives', icon: 'EX', label: 'Team' },
           { id: 'land', icon: 'LD', label: 'Land' },
-          { id: 'goals', icon: '🎯', label: 'Goals' },
           { id: 'classroom', icon: 'ED', label: 'Learn' },
         ].map(btn => (
           <button
@@ -124,6 +123,19 @@ export default function TopBar({ gameState, onSpeedChange, onPauseToggle, onPane
             <span className="text-gray-500 mt-0.5">{btn.label}</span>
           </button>
         ))}
+        <button
+          onClick={() => onPanelToggle('offers')}
+          className="relative flex flex-col items-center px-1.5 py-0.5 rounded hover:bg-gray-800 transition-colors text-[9px]"
+          title="Inbound acquisition offers"
+        >
+          <span className="text-sm leading-none">📨</span>
+          <span className="text-gray-500 mt-0.5">Offers</span>
+          {gameState.incomingOffers.length > 0 && (
+            <span className="absolute -top-0.5 right-0 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-amber-500 px-1 text-[8px] font-bold text-black">
+              {gameState.incomingOffers.length}
+            </span>
+          )}
+        </button>
         <div className="h-7 w-px bg-gray-700 mx-1" />
         <div className="text-right">
           <div className="text-[9px] text-gray-500">Index</div>

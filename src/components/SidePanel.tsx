@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { GameState, BuildingType, UIPanel } from '../game/types';
+import type { GameState, BuildingType, UIPanel, Building } from '../game/types';
 import { formatMoney, formatPercent } from '../utils/format';
 
 interface SidePanelProps {
@@ -17,6 +17,13 @@ interface SidePanelProps {
   onDemolishBuilding: (buildingId: string) => void;
   onMakeOffer: (buildingId: string, amount: number) => void;
   askingPriceFor: (buildingId: string) => number | null;
+  onAcceptOffer: (offerId: string) => void;
+  onRejectOffer: (offerId: string) => void;
+  onRemoveProduct: (buildingId: string, productId: string) => void;
+  onSetWarehouseTier: (buildingId: string, tier: 'general' | 'cold' | 'hazmat') => void;
+  onSetMenuPrice: (buildingId: string, itemId: string, price: number) => void;
+  onToggleMenuItem: (buildingId: string, itemId: string) => void;
+  onSetAdBudget: (buildingId: string, budget: number) => void;
   onConfigureProduct: (buildingId: string, productId: string) => void;
   onAutoSource: (buildingId: string) => void;
   onOptimizeAllSupply: () => void;
@@ -74,7 +81,7 @@ export default function SidePanel(props: SidePanelProps) {
         {activePanel === 'products' && <ProductsPanel {...props} />}
         {activePanel === 'city' && <CityPanel {...props} />}
         {activePanel === 'company' && <CompanyPanel {...props} />}
-        {activePanel === 'goals' && <GoalsPanel {...props} />}
+        {activePanel === 'offers' && <OffersPanel {...props} />}
         {activePanel === 'research' && <ResearchPanel {...props} />}
         {activePanel === 'executives' && <ExecutivesPanel {...props} />}
         {activePanel === 'land' && <LandPanel {...props} />}
@@ -112,6 +119,10 @@ const BUILDING_DEFS: { type: BuildingType; name: string; icon: string; cost: num
   { type: 'internet_ecommerce', name: 'E-Commerce', icon: 'EC', cost: 5200000, desc: 'Sell in every city', category: 'digital' },
   { type: 'software_company', name: 'Software Studio', icon: 'SW', cost: 3200000, desc: 'Develop digital products', category: 'digital' },
   { type: 'telecom', name: 'Telecom Operator', icon: '📡', cost: 4800000, desc: 'Grows the internet population', category: 'digital' },
+  { type: 'restaurant', name: 'Restaurant', icon: '🍽️', cost: 850000, desc: 'Full-service dining', category: 'hospitality' },
+  { type: 'fast_food', name: 'Fast Food', icon: '🍔', cost: 520000, desc: 'High-turnover quick service', category: 'hospitality' },
+  { type: 'cafe', name: 'Cafe', icon: '☕', cost: 310000, desc: 'Coffee & light bites', category: 'hospitality' },
+  { type: 'bar', name: 'Bar & Grill', icon: '🍺', cost: 640000, desc: 'Evening trade, drinks-led', category: 'hospitality' },
 ];
 
 function BuildPanel({ onBuild, gameState }: SidePanelProps) {
@@ -178,12 +189,22 @@ const BUILDING_ICONS: Record<BuildingType, string> = {
   civic_school: 'SC', civic_hospital: 'H', civic_stadium: 'ST', civic_museum: 'MU', civic_park: 'PK',
   internet_search: 'SE', internet_social: 'SN', internet_ecommerce: 'EC', software_company: 'SW',
   telecom: '📡',
+  restaurant: '🍽️', fast_food: '🍔', cafe: '☕', bar: '🍺',
 };
+
+function isShopType(type: string) {
+  return type === 'retail_store' || type === 'internet_ecommerce';
+}
+
+function isHospitalityType(type: string) {
+  return type === 'restaurant' || type === 'fast_food' || type === 'cafe' || type === 'bar';
+}
 
 function BuildingPanel({
   gameState, onUpgradeBuilding, onDemolishBuilding, onConfigureProduct, onAutoSource,
   onToggleInternalSale, onSetPrice, onSetTraining, onSetRent, onSetMedia, onStartResearch,
-  onMakeOffer, askingPriceFor,
+  onMakeOffer, askingPriceFor, onRemoveProduct, onSetWarehouseTier,
+  onSetMenuPrice, onToggleMenuItem, onSetAdBudget,
 }: SidePanelProps) {
   const [offerAmount, setOfferAmount] = useState(0);
   const building = gameState.buildings.find(b => b.id === gameState.selectedBuilding);
@@ -223,21 +244,26 @@ function BuildingPanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-1.5">
-        <StatBox label="Revenue" value={formatMoney(building.revenue)} color="text-blue-400" />
-        <StatBox label="Costs" value={formatMoney(building.operatingCost)} color="text-orange-400" />
-        <StatBox label="Profit" value={formatMoney(building.profit)} color={building.profit >= 0 ? 'text-green-400' : 'text-red-400'} />
-        <StatBox label="Employees" value={building.employees.toString()} color="text-gray-300" />
-        <StatBox label="Util" value={`${building.utilization.toFixed(0)}%`} color="text-yellow-400" />
-        <StatBox label="Train" value={`Lv ${building.trainingLevel}`} color="text-purple-400" />
-        <StatBox label="Cond" value={`${building.condition.toFixed(0)}%`} color={building.condition > 60 ? 'text-cyan-400' : 'text-red-400'} />
-        <StatBox label="Traffic" value={building.customerTraffic.toFixed(0)} color="text-pink-400" />
-        <StatBox label="Supply" value={building.supply.toFixed(0)} color="text-yellow-400" />
-        <StatBox label="Demand" value={building.demand.toFixed(0)} color="text-orange-400" />
-      </div>
-
-      <ProgressBar label="Utilization" value={building.utilization} color="bg-emerald-500" />
-      <ProgressBar label="Condition" value={building.condition} color="bg-cyan-500" />
+      {isOwned ? (
+        <>
+          <div className="grid grid-cols-2 gap-1.5">
+            <StatBox label="Revenue" value={formatMoney(building.revenue)} color="text-blue-400" />
+            <StatBox label="COGS" value={formatMoney(building.cogs)} color="text-amber-400" />
+            <StatBox label="Opex" value={formatMoney(building.operatingCost)} color="text-orange-400" />
+            <StatBox label="Profit" value={formatMoney(building.profit)} color={building.profit >= 0 ? 'text-green-400' : 'text-red-400'} />
+            <StatBox label="Employees" value={building.employees.toString()} color="text-gray-300" />
+            <StatBox label="Util" value={`${building.utilization.toFixed(0)}%`} color="text-yellow-400" />
+            <StatBox label="Train" value={`Lv ${building.trainingLevel}`} color="text-purple-400" />
+            <StatBox label="Cond" value={`${building.condition.toFixed(0)}%`} color={building.condition > 60 ? 'text-cyan-400' : 'text-red-400'} />
+            <StatBox label="Traffic" value={building.customerTraffic.toFixed(0)} color="text-pink-400" />
+            <StatBox label="Margin" value={`${building.revenue > 0 ? (building.profit / building.revenue * 100).toFixed(0) : '0'}%`} color={building.profit >= 0 ? 'text-emerald-400' : 'text-red-400'} />
+          </div>
+          <ProgressBar label="Utilization" value={building.utilization} color="bg-emerald-500" />
+          <ProgressBar label="Condition" value={building.condition} color="bg-cyan-500" />
+        </>
+      ) : (
+        <CompetitorView building={building} gameState={gameState} />
+      )}
 
       {building.type === 'seaport' && (
         <Section title={`${building.portKind === 'industrial' ? 'I' : 'C'} Port Inventory`}>
@@ -252,22 +278,187 @@ function BuildingPanel({
       )}
 
       {isOwned && productionTypes.includes(building.type) && building.type !== 'mine' && (
-        <Section title="Operating Product">
-          <select
-            value={building.productId || ''}
-            onChange={event => onConfigureProduct(building.id, event.target.value)}
-            className="w-full rounded-md border border-gray-700 bg-gray-800 px-2 py-1.5 text-[11px] text-white outline-none focus:border-emerald-500"
-          >
-            <option value="">Select a product</option>
-            {availableProducts.map(item => <option key={item.id} value={item.id}>{item.name} | Tech {item.techLevel.toFixed(1)}</option>)}
-          </select>
-          {product && (
-            <div className="mt-2 grid grid-cols-2 gap-1 text-[10px]">
-              <span className="text-gray-500">Market demand</span><span className="text-right text-cyan-400">{product.marketDemand.toFixed(0)}/100</span>
-              <span className="text-gray-500">Necessity</span><span className="text-right text-amber-400">{product.demandIndex}/100</span>
-              <span className="text-gray-500">Demand shifted</span><span className={product.demandShift > 70 ? 'text-right text-red-400' : 'text-right text-gray-300'}>{product.demandShift.toFixed(0)}%</span>
+        <Section title={isShopType(building.type) ? `Operating Lines (${building.products.length}/${building.productSlots} slots)` : 'Operating Product'}>
+          {isShopType(building.type) ? (
+            <div className="space-y-1.5">
+              {building.products.slice(0, building.productSlots).map(pid => {
+                const line = gameState.products.find(p => p.id === pid);
+                if (!line) return null;
+                const stock = building.inventory[pid] || 0;
+                return (
+                  <div key={pid} className="flex items-center justify-between rounded border border-gray-800 bg-gray-900/60 px-2 py-1.5">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span>{line.icon}</span>
+                      <div className="min-w-0">
+                        <div className="truncate text-[10px] font-semibold text-gray-200">{line.name}</div>
+                        <div className="text-[9px] text-gray-500">stock {stock.toFixed(0)} · demand {line.marketDemand.toFixed(0)}</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => onRemoveProduct(building.id, pid)}
+                      disabled={building.products.length <= 1}
+                      className="ml-2 shrink-0 rounded border border-gray-700 px-1.5 py-0.5 text-[9px] text-gray-400 hover:border-red-600 hover:text-red-300 disabled:opacity-30"
+                      title="Delist"
+                    >✕</button>
+                  </div>
+                );
+              })}
+              {building.products.length < building.productSlots && (
+                <select
+                  value=""
+                  onChange={event => event.target.value && onConfigureProduct(building.id, event.target.value)}
+                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-2 py-1.5 text-[11px] text-white outline-none focus:border-emerald-500"
+                >
+                  <option value="">+ Add product line…</option>
+                  {availableProducts.filter(p => !building.products.includes(p.id)).map(item => (
+                    <option key={item.id} value={item.id}>{item.icon} {item.name} · ${item.currentPrice.toFixed(2)}</option>
+                  ))}
+                </select>
+              )}
+              <div className="text-[9px] leading-relaxed text-gray-500">
+                Upgrades add two shelf slots. Each line sources and sells independently.
+              </div>
+            </div>
+          ) : (
+            <>
+              <select
+                value={building.productId || ''}
+                onChange={event => onConfigureProduct(building.id, event.target.value)}
+                className="w-full rounded-md border border-gray-700 bg-gray-800 px-2 py-1.5 text-[11px] text-white outline-none focus:border-emerald-500"
+              >
+                <option value="">Select a product</option>
+                {availableProducts.map(item => <option key={item.id} value={item.id}>{item.name} | Tech {item.techLevel.toFixed(1)}</option>)}
+              </select>
+              {product && (
+                <div className="mt-2 grid grid-cols-2 gap-1 text-[10px]">
+                  <span className="text-gray-500">Market demand</span><span className="text-right text-cyan-400">{product.marketDemand.toFixed(0)}/100</span>
+                  <span className="text-gray-500">Necessity</span><span className="text-right text-amber-400">{product.demandIndex}/100</span>
+                  <span className="text-gray-500">Demand shifted</span><span className={product.demandShift > 70 ? 'text-right text-red-400' : 'text-right text-gray-300'}>{product.demandShift.toFixed(0)}%</span>
+                </div>
+              )}
+            </>
+          )}
+        </Section>
+      )}
+
+      {isOwned && building.menu.length > 0 && (
+        <Section title="Menu Board">
+          {(() => {
+            const active = building.menu.filter(m => m.enabled);
+            const weight = active.reduce((s, m) => s + m.popularity, 0) || 1;
+            const blendedPrice = active.reduce((s, m) => s + (m.popularity / weight) * m.price, 0);
+            const blendedCost = active.reduce((s, m) => s + (m.popularity / weight) * (m.foodCost + (m.includesToy ? 0.42 : 0)), 0);
+            const foodCostPct = blendedPrice > 0 ? (blendedCost / blendedPrice) * 100 : 0;
+            return (
+              <>
+                <div className="mb-1.5 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px]">
+                  <span className="text-gray-500">Avg check</span>
+                  <span className="text-right font-mono text-emerald-400">${(blendedPrice * building.pricingMultiplier).toFixed(2)}</span>
+                  <span className="text-gray-500">Food cost</span>
+                  <span className={`text-right font-mono ${foodCostPct < 32 ? 'text-emerald-400' : foodCostPct < 38 ? 'text-amber-400' : 'text-red-400'}`}>
+                    {foodCostPct.toFixed(1)}%
+                  </span>
+                  <span className="text-gray-500">Covers / hr</span>
+                  <span className="text-right font-mono text-cyan-400">{building.lastUnitsSold.toFixed(1)}</span>
+                </div>
+                <div className="mb-1.5 text-[9px] leading-relaxed text-gray-500">
+                  Industry benchmark is 28–35% food cost. Drinks and sides carry the margin;
+                  kids boxes include a licensed toy at $0.42 but pull family traffic.
+                </div>
+                <div className="space-y-1">
+                  {building.menu.map(item => (
+                    <div key={item.id} className={`rounded border px-2 py-1.5 ${item.enabled ? 'border-gray-800 bg-gray-900/60' : 'border-gray-800/50 bg-gray-900/20 opacity-50'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1">
+                            <span className="truncate text-[10px] font-semibold text-gray-200">{item.name}</span>
+                            {item.includesToy && <span className="rounded bg-amber-700 px-1 text-[8px] font-bold text-white">TOY</span>}
+                          </div>
+                          <div className="text-[9px] uppercase tracking-wide text-gray-500">
+                            {item.category} · cost ${item.foodCost.toFixed(2)} · {(item.popularity * 100).toFixed(0)}% mix
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => onToggleMenuItem(building.id, item.id)}
+                          className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] ${item.enabled ? 'border-emerald-700 text-emerald-400' : 'border-gray-700 text-gray-500'}`}
+                        >{item.enabled ? 'On' : 'Off'}</button>
+                      </div>
+                      <div className="mt-1 flex items-center gap-1.5">
+                        <span className="text-[9px] text-gray-500">$</span>
+                        <input
+                          type="number"
+                          step="0.25"
+                          value={item.price}
+                          onChange={e => onSetMenuPrice(building.id, item.id, Number(e.target.value))}
+                          className="w-16 rounded border border-gray-700 bg-gray-800 px-1 py-0.5 text-[10px] text-white"
+                        />
+                        <span className={`text-[9px] font-mono ${
+                          (item.price - item.foodCost) / item.price > 0.68 ? 'text-emerald-400' : 'text-amber-400'
+                        }`}>
+                          {(((item.price - item.foodCost) / Math.max(0.01, item.price)) * 100).toFixed(0)}% GM
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
+        </Section>
+      )}
+
+      {isOwned && (building.type === 'retail_store' || isHospitalityType(building.type)) && (
+        <Section title="Marketing">
+          <RangeRow
+            label="Local ad spend / mo"
+            value={building.adBudget}
+            min={0} max={120000} step={5000}
+            suffix=""
+            onChange={value => onSetAdBudget(building.id, value)}
+          />
+          <DataRow label="Brand awareness" value={`${(company?.brandAwareness ?? 0).toFixed(0)}/100`} color="text-fuchsia-400" />
+          <DataRow label="Loyal customer base" value={`${(building.loyalCustomerBase * 100).toFixed(0)}%`} color="text-cyan-400" />
+          <div className="text-[9px] leading-relaxed text-gray-500">
+            Advertising builds national awareness that lifts every outlet. Loyal customers
+            keep buying through price changes — roughly 15% of a base can switch per month.
+          </div>
+        </Section>
+      )}
+
+      {isOwned && (building.type === 'retail_store' || isHospitalityType(building.type) || building.type === 'warehouse') && (
+        <Section title="Site Accessibility">
+          <DataRow label="Parking" value={`${(building.parkingScore * 100).toFixed(0)}/100`} color={building.parkingScore > 0.6 ? 'text-emerald-400' : 'text-amber-400'} />
+          <DataRow label="Highway access" value={`${(building.highwayAccess * 100).toFixed(0)}/100`} color={building.highwayAccess > 0.5 ? 'text-emerald-400' : 'text-gray-400'} />
+          <DataRow label="Staff morale" value={`${building.employeeSatisfaction.toFixed(0)}/100`} color={building.employeeSatisfaction > 65 ? 'text-emerald-400' : building.employeeSatisfaction > 40 ? 'text-amber-400' : 'text-red-400'} />
+          {city && (
+            <div className="text-[9px] leading-relaxed text-gray-500">
+              {city.name} is {(city.carDependency * 100).toFixed(0)}% car-dependent
+              {city.carDependency > 0.6 ? ' — parking is critical here.' : ' — footfall matters more than parking.'}
             </div>
           )}
+        </Section>
+      )}
+
+      {isOwned && building.type === 'warehouse' && (
+        <Section title="Storage Specialisation">
+          <div className="flex gap-1">
+            {(['general', 'cold', 'hazmat'] as const).map(tier => (
+              <button
+                key={tier}
+                onClick={() => onSetWarehouseTier(building.id, tier)}
+                className={`flex-1 rounded border py-1.5 text-[9px] font-bold capitalize ${
+                  building.warehouseTier === tier
+                    ? 'border-cyan-500 bg-cyan-950/40 text-cyan-300'
+                    : 'border-gray-700 text-gray-400 hover:border-gray-500'
+                }`}
+              >{tier}</button>
+            ))}
+          </div>
+          <div className="mt-1.5 text-[9px] leading-relaxed text-gray-500">
+            {building.warehouseTier === 'cold' && 'Cold chain: premium rates for food & pharma, higher energy opex.'}
+            {building.warehouseTier === 'hazmat' && 'Hazmat-certified: top rates for chemicals & fuel, strict compliance costs.'}
+            {building.warehouseTier === 'general' && 'General dry goods: low rates, low opex, broad demand.'}
+          </div>
         </Section>
       )}
 
@@ -373,26 +564,56 @@ function BuildingPanel({
       )}
 
       {!isOwned && company && building.companyId !== 'system' && (
-        <Section title="Acquisition Offer">
+        <Section title="Acquisition Negotiation">
           {(() => {
             const asking = askingPriceFor(building.id);
+            const blocked = gameState.tick < building.negotiationBlockedUntil;
+            const monthsLeft = blocked
+              ? Math.max(1, Math.ceil((building.negotiationBlockedUntil - gameState.tick) / (24 * 30)))
+              : 0;
+            const insultThreshold = asking ? asking * 0.55 : 0;
+            const isInsult = Boolean(asking) && offerAmount > 0 && offerAmount < insultThreshold;
             return (
               <div className="space-y-2">
-                <DataRow label="Seller" value={company.name} color="text-gray-300" />
-                <DataRow label="Board ask" value={asking ? formatMoney(asking) : '--'} color="text-amber-400" />
-                <input
-                  type="number"
-                  value={offerAmount}
-                  onChange={e => setOfferAmount(Math.max(0, Number(e.target.value)))}
-                  placeholder={asking ? Math.round(asking).toString() : 'Offer amount'}
-                  className="w-full rounded border border-gray-700 bg-gray-800 px-2 py-1.5 text-[11px] text-white"
+                <DataRow label="Owner" value={company.name} color="text-gray-300" />
+                <DataRow label="Board valuation" value={asking ? formatMoney(asking) : '--'} color="text-amber-400" />
+                <DataRow
+                  label="Status"
+                  value={blocked ? 'Talks closed' : 'Open to offers'}
+                  color={blocked ? 'text-red-400' : 'text-cyan-400'}
                 />
-                <button
-                  onClick={() => onMakeOffer(building.id, offerAmount || Math.round(asking || 0))}
-                  className="w-full rounded bg-emerald-600 py-1.5 text-[10px] font-bold hover:bg-emerald-500"
-                >
-                  Submit offer{(asking && offerAmount >= asking) ? ' (buyout)' : ''}
-                </button>
+                <div className="text-[9px] leading-relaxed text-gray-500">
+                  Valuation is a DCF of forward earnings at {(gameState.economy.interestRate).toFixed(1)}% base rate
+                  plus depreciated replacement cost. It moves with rates, occupancy and the cycle.
+                </div>
+
+                {blocked ? (
+                  <div className="rounded-lg border border-red-800 bg-red-950/40 p-2 text-[10px] leading-relaxed text-red-300">
+                    {company.name} walked away from talks. Their board will not reconsider for {monthsLeft} more month{monthsLeft > 1 ? 's' : ''}.
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      type="number"
+                      value={offerAmount || ''}
+                      onChange={e => setOfferAmount(Math.max(0, Number(e.target.value)))}
+                      placeholder={asking ? Math.round(asking).toString() : 'Offer amount'}
+                      className="w-full rounded border border-gray-700 bg-gray-800 px-2 py-1.5 text-[11px] text-white"
+                    />
+                    {isInsult && (
+                      <div className="rounded border border-red-800 bg-red-950/30 px-2 py-1 text-[9px] text-red-300">
+                        Below 55% of book value — this will be treated as an insult and end talks for three months.
+                      </div>
+                    )}
+                    <button
+                      onClick={() => onMakeOffer(building.id, offerAmount || Math.round(asking || 0))}
+                      className="w-full rounded bg-emerald-600 py-1.5 text-[10px] font-bold hover:bg-emerald-500"
+                    >
+                      Submit offer{(asking && offerAmount >= asking) ? ' — meets ask' : ''}
+                    </button>
+                  </>
+                )}
+
                 {gameState.lastOffer && gameState.lastOffer.buildingId === building.id && (
                   <div className={`rounded-lg border p-2 text-[10px] leading-relaxed ${
                     gameState.lastOffer.status === 'accepted'
@@ -445,6 +666,86 @@ function BuildingPanel({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * What a rival's premises look like from the street. Internal financials
+ * (revenue, costs, payroll, training) are private — you only see what any
+ * customer or analyst could observe: the storefront, the menu, prices,
+ * how busy it is, and how well kept the building looks.
+ */
+function CompetitorView({ building, gameState }: { building: Building; gameState: GameState }) {
+  const product = gameState.products.find(item => item.id === building.productId);
+  const menu = building.products
+    .map(id => gameState.products.find(p => p.id === id))
+    .filter((p): p is NonNullable<typeof p> => Boolean(p));
+  const isVenue = ['restaurant', 'fast_food', 'cafe', 'bar'].includes(building.type);
+  const isShop = building.type === 'retail_store' || building.type === 'internet_ecommerce';
+  const isRealEstate = building.type === 'apartment' || building.type === 'commercial';
+
+  const busyness = building.utilization > 75 ? 'Packed' : building.utilization > 45 ? 'Steady trade' : building.utilization > 20 ? 'Quiet' : 'Nearly empty';
+  const busyColor = building.utilization > 75 ? 'text-emerald-400' : building.utilization > 45 ? 'text-cyan-400' : building.utilization > 20 ? 'text-amber-400' : 'text-red-400';
+  const upkeep = building.condition > 80 ? 'Well maintained' : building.condition > 55 ? 'Showing wear' : 'Run down';
+
+  return (
+    <div className="space-y-2">
+      <div className="rounded-lg border border-gray-800 bg-gray-900/60 p-2 text-[9px] italic leading-relaxed text-gray-500">
+        Competitor premises. Internal accounts are confidential — this is what public
+        observation and market research can establish.
+      </div>
+
+      <Section title={isVenue ? 'On the Menu' : isShop ? 'On the Shelves' : 'Operation'}>
+        {isVenue && building.menu.length > 0 ? (
+          building.menu.filter(m => m.enabled).map(item => (
+            <div key={item.id} className="flex items-center justify-between border-b border-gray-800 py-1 last:border-0">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate text-[10px] text-gray-300">{item.name}</span>
+                {item.includesToy && <span className="shrink-0 rounded bg-amber-800 px-1 text-[8px] text-amber-200">toy</span>}
+              </div>
+              <span className="shrink-0 font-mono text-[10px] text-emerald-400">
+                ${(item.price * building.pricingMultiplier).toFixed(2)}
+              </span>
+            </div>
+          ))
+        ) : (isVenue || isShop) && menu.length > 0 ? (
+          menu.map(item => (
+            <div key={item.id} className="flex items-center justify-between border-b border-gray-800 py-1 last:border-0">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span>{item.icon}</span>
+                <span className="truncate text-[10px] text-gray-300">{item.name}</span>
+              </div>
+              <span className="shrink-0 font-mono text-[10px] text-emerald-400">
+                ${(item.currentPrice * building.pricingMultiplier).toFixed(2)}
+              </span>
+            </div>
+          ))
+        ) : isRealEstate ? (
+          <>
+            <DataRow label="Units" value={`${Math.round(building.capacity)}`} color="text-gray-300" />
+            <DataRow label="Asking rent" value={`$${building.rentPerUnit.toFixed(0)}/mo`} color="text-emerald-400" />
+            <DataRow label="Occupancy" value={`${building.occupancy.toFixed(0)}%`} color={building.occupancy > 70 ? 'text-emerald-400' : 'text-amber-400'} />
+          </>
+        ) : product ? (
+          <DataRow label="Produces" value={product.name} color="text-cyan-400" />
+        ) : (
+          <div className="text-[10px] text-gray-500">No public product listing.</div>
+        )}
+      </Section>
+
+      <Section title="Public Observation">
+        <DataRow label="Footfall" value={busyness} color={busyColor} />
+        {building.customerTraffic > 0 && (
+          <DataRow label="Location traffic" value={`${building.customerTraffic.toFixed(0)}/100`} color="text-pink-400" />
+        )}
+        <DataRow label="Condition" value={upkeep} color={building.condition > 70 ? 'text-cyan-400' : 'text-amber-400'} />
+        <DataRow label="Site size" value={`${building.width}×${building.height} plots`} color="text-gray-300" />
+        <DataRow label="Storeys" value={`${building.level}`} color="text-gray-300" />
+        {product && (isVenue || isShop) && (
+          <DataRow label="Reputation" value={`${product.brand.toFixed(0)}/100`} color="text-violet-400" />
+        )}
+      </Section>
     </div>
   );
 }
@@ -832,10 +1133,32 @@ function ProductsPanel({ gameState, onAdvertiseProduct, onAcquireTechnology }: S
             <div className="mt-2 text-[9px] font-bold uppercase tracking-wider text-gray-500">Recipe</div>
             {product.inputs.length === 0 ? <div className="text-[10px] text-gray-500">No manufactured inputs</div> : product.inputs.map(input => <div key={input.productId} className="flex justify-between text-[10px]"><span className="text-gray-300">{input.productName}</span><span className="font-mono text-gray-500">x{input.quantity}</span></div>)}
             {overlap.length > 0 && <div className="mt-2 text-[9px] leading-relaxed text-gray-500">Supply overlap: {overlap.slice(0, 5).map(item => item.name).join(', ')}{overlap.length > 5 ? ` and ${overlap.length - 5} more` : ''}.</div>}
-            <div className="mt-2 flex gap-1">
-              <button onClick={() => onAdvertiseProduct(product.id, 1000000)} className="flex-1 rounded bg-pink-700 py-1.5 text-[9px] font-bold hover:bg-pink-600">Advertise $1M</button>
-              <button onClick={() => onAcquireTechnology(product.id)} className="flex-1 rounded bg-violet-700 py-1.5 text-[9px] font-bold hover:bg-violet-600">Buy technology</button>
-            </div>
+            {(() => {
+              const brandable = product.kind === 'consumer' || product.kind === 'digital';
+              const researchable = brandable || product.kind === 'semi';
+              if (!brandable && !researchable) {
+                return (
+                  <div className="mt-2 rounded border border-gray-800 bg-gray-900/60 px-2 py-1.5 text-[9px] leading-relaxed text-gray-500">
+                    {product.kind === 'raw' ? 'Extracted commodity' : 'Unprocessed farm output'} — sold on grade and spot price.
+                    Brands and process licences do not apply. Improve yield through better deposits, land quality and training.
+                  </div>
+                );
+              }
+              return (
+                <div className="mt-2 flex gap-1">
+                  {brandable && (
+                    <button onClick={() => onAdvertiseProduct(product.id, 1000000)} className="flex-1 rounded bg-pink-700 py-1.5 text-[9px] font-bold hover:bg-pink-600">
+                      Advertise $1M
+                    </button>
+                  )}
+                  {researchable && (
+                    <button onClick={() => onAcquireTechnology(product.id)} className="flex-1 rounded bg-violet-700 py-1.5 text-[9px] font-bold hover:bg-violet-600">
+                      Licence technology
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
@@ -927,41 +1250,63 @@ function CompanyPanel({ gameState }: SidePanelProps) {
   );
 }
 
-// ============= GOALS =============
+// ============= INBOUND ACQUISITION OFFERS =============
 
-function GoalsPanel({ gameState }: SidePanelProps) {
+function OffersPanel({ gameState, onAcceptOffer, onRejectOffer }: SidePanelProps) {
+  const offers = gameState.incomingOffers;
   return (
     <div className="space-y-2">
-      <div className="bg-gray-900 rounded-lg p-2.5 border border-gray-800 text-[10px] text-gray-400">
-        Complete objectives to earn cash rewards. Watch your empire grow! 🚀
+      <div className="rounded-lg border border-gray-800 bg-gray-900 p-2.5 text-[10px] leading-relaxed text-gray-400">
+        Rival boards periodically bid for your assets. Bids sit between 88% and 108% of independent
+        fair value — nobody overpays. Weigh the cash against the earnings you give up.
       </div>
-      {gameState.goals.map(goal => {
-        const progress = Math.min(100, (goal.current / goal.target) * 100);
-        const numericGoal = goal.target <= 100;
+      {offers.length === 0 && (
+        <div className="py-8 text-center text-xs text-gray-500">
+          <div className="mb-2 text-3xl">📭</div>
+          <p>No inbound offers.</p>
+          <p className="mt-1 text-[10px]">Profitable, well-located assets attract buyers.</p>
+        </div>
+      )}
+      {offers.map(offer => {
+        const premium = (offer.amount / Math.max(1, offer.fairValue) - 1) * 100;
+        const building = gameState.buildings.find(b => b.id === offer.buildingId);
+        const monthlyProfit = building ? building.profit * 24 * 30 : 0;
+        const paybackYears = monthlyProfit > 0 ? offer.amount / (monthlyProfit * 12) : Infinity;
         return (
-          <div key={goal.id} className={`bg-gray-900 rounded-lg p-2.5 border ${goal.completed ? 'border-green-500' : 'border-gray-800'}`}>
-            <div className="flex items-start justify-between mb-1">
-              <div>
-                <div className="text-[11px] font-bold text-white">
-                  {goal.completed && '✅ '}{goal.name}
-                </div>
-                <div className="text-[9px] text-gray-500">{goal.description}</div>
+          <div key={offer.id} className="rounded-lg border border-amber-800 bg-amber-950/20 p-2.5">
+            <div className="mb-1 flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="truncate text-[11px] font-bold text-white">{offer.buildingName}</div>
+                <div className="text-[9px] text-gray-400">Bidder: {offer.buyerName}</div>
               </div>
-              <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
-                goal.category === 'wealth' ? 'bg-green-700' :
-                goal.category === 'expansion' ? 'bg-blue-700' :
-                goal.category === 'dominance' ? 'bg-red-700' : 'bg-purple-700'
-              }`}>+{formatMoney(goal.reward)} | {goal.knowledgeReward} KP</span>
+              <span className="shrink-0 rounded bg-amber-700 px-1.5 py-0.5 text-[9px] font-bold text-white">
+                {formatMoney(offer.amount)}
+              </span>
             </div>
-            <div className="flex justify-between text-[9px] text-gray-400 mb-0.5">
-              <span>{numericGoal ? goal.current.toFixed(1) : formatMoney(goal.current)} / {numericGoal ? goal.target : formatMoney(goal.target)}</span>
-              <span className={progress >= 100 ? 'text-green-400' : 'text-yellow-400'}>{progress.toFixed(0)}%</span>
+            <p className="mb-1.5 text-[9px] italic leading-relaxed text-gray-400">{offer.rationale}</p>
+            <div className="mb-2 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px]">
+              <span className="text-gray-500">Fair value</span>
+              <span className="text-right font-mono text-cyan-400">{formatMoney(offer.fairValue)}</span>
+              <span className="text-gray-500">Premium</span>
+              <span className={`text-right font-mono ${premium >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {premium >= 0 ? '+' : ''}{premium.toFixed(1)}%
+              </span>
+              <span className="text-gray-500">Monthly profit</span>
+              <span className={`text-right font-mono ${monthlyProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {formatMoney(monthlyProfit)}
+              </span>
+              <span className="text-gray-500">Payback</span>
+              <span className="text-right font-mono text-gray-300">
+                {Number.isFinite(paybackYears) ? `${paybackYears.toFixed(1)} yrs` : 'n/a'}
+              </span>
             </div>
-            <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-              <div
-                className={`h-full transition-all ${progress >= 100 ? 'bg-green-500' : progress > 50 ? 'bg-yellow-500' : 'bg-orange-500'}`}
-                style={{ width: `${progress}%` }}
-              />
+            <div className="flex gap-1.5">
+              <button onClick={() => onAcceptOffer(offer.id)} className="flex-1 rounded bg-emerald-600 py-1.5 text-[10px] font-bold hover:bg-emerald-500">
+                Accept
+              </button>
+              <button onClick={() => onRejectOffer(offer.id)} className="flex-1 rounded border border-gray-700 py-1.5 text-[10px] font-bold text-gray-300 hover:border-red-600 hover:text-red-300">
+                Decline
+              </button>
             </div>
           </div>
         );

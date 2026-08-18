@@ -26,7 +26,11 @@ export type BuildingType =
   | 'internet_social'
   | 'internet_ecommerce'
   | 'software_company'
-  | 'telecom';
+  | 'telecom'
+  | 'restaurant'
+  | 'fast_food'
+  | 'cafe'
+  | 'bar';
 
 export type EconomyCycle = 'boom' | 'growth' | 'recession' | 'recovery';
 export type AIStrategy = 'aggressive' | 'balanced' | 'conservative';
@@ -46,6 +50,32 @@ export type SoftwareClass =
 export type TalentRole = 'lead_researcher' | 'lead_programmer';
 export type EcommerceChannel = 'retail' | 'packaged_ecommerce' | 'digital_download';
 export type CompanySector = 'consumer' | 'industrial' | 'technology' | 'real_estate' | 'media' | 'investment' | 'diversified';
+/** Where a product sits on the value ladder — drives elasticity and Veblen behaviour. */
+export type MarketSegment = 'value' | 'mainstream' | 'premium' | 'luxury';
+export type WarehouseTier = 'general' | 'cold' | 'hazmat';
+
+/** A menu line inside a hospitality venue (combo meals, kids boxes, drinks). */
+export interface MenuItem {
+  id: string;
+  name: string;
+  category: 'main' | 'side' | 'drink' | 'dessert' | 'combo' | 'kids';
+  price: number;
+  foodCost: number;
+  /** 0..1 share of covers that pick this line. Re-normalised at runtime. */
+  popularity: number;
+  /** Kids boxes ship a licensed toy — a real cost and a real traffic driver. */
+  includesToy: boolean;
+  enabled: boolean;
+}
+
+/** Trade credit: money owed either way, settled after `dueTick`. */
+export interface CreditEntry {
+  id: string;
+  counterpartyId: string;
+  amount: number;
+  dueTick: number;
+  kind: 'receivable' | 'payable';
+}
 
 export interface Camera {
   x: number;
@@ -105,6 +135,14 @@ export interface City {
   bandwidthCapacity: number;
   /** Share of retail that happens online, 0..1. Rises slowly over the decades. */
   ecommerceAdoption: number;
+  /** Demographics drive which products actually sell here. */
+  medianAge: number;
+  /** 0..100 share with tertiary education — lifts premium/tech demand. */
+  educationIndex: number;
+  /** 0..1 share of households with children — drives kids-menu and family goods. */
+  familyShare: number;
+  /** 0..1 share of trips made by car — decides how much parking matters. */
+  carDependency: number;
 }
 
 export interface Company {
@@ -131,6 +169,18 @@ export interface Company {
   dividendPayout: number;
   intangibleTechnology: number;
   autoAdjustPrices: boolean;
+  /** Consecutive months of insolvency — three triggers liquidation. */
+  monthsInDistress: number;
+  /** How many offer rounds this board tolerates before walking away (2–4). */
+  maxOfferRounds: number;
+  /** National brand awareness 0..100, grows with footprint and advertising. */
+  brandAwareness: number;
+  /** Trade credit ledger. */
+  credit: CreditEntry[];
+  /** Competitive intelligence: last observed player share per "productId|cityId". */
+  observedPlayerShare: Record<string, number>;
+  /** Ticks until the AI's next scheduled price review. */
+  nextPriceReviewTick: number;
 }
 
 export interface Building {
@@ -211,6 +261,48 @@ export interface Building {
   /** Acquisition registry: per-buyer standing offer made for this building. */
   standingOffer: number | null;
   standingOfferBy: string | null;
+  /** How many offers the player has already tabled for this asset. */
+  offersMade: number;
+  /** Tick until which the seller refuses to reopen talks (insulting bid cooldown). */
+  negotiationBlockedUntil: number;
+  /** Cost of goods sold this tick, so profit reflects true margin. */
+  cogs: number;
+  /** Cached asking price so it drifts realistically instead of snapping. */
+  cachedAsk: number;
+  /** Slow-moving seller sentiment that pushes the board valuation up or down. */
+  askDrift: number;
+  /** How many product lines a retailer may stock (expands with upgrades). */
+  productSlots: number;
+  warehouseTier: WarehouseTier;
+  /** Telecom only. */
+  marketingBudget: number;
+  /** Hospitality menu board. */
+  menu: MenuItem[];
+  /** Sticky share of local customers who habitually shop here, 0..1. */
+  loyalCustomerBase: number;
+  /** Parking capacity relative to footfall, 0..1. */
+  parkingScore: number;
+  /** Highway adjacency 0..1 — matters for big-box retail and logistics. */
+  highwayAccess: number;
+  /** Staff morale 0..100. Drives service quality and repeat custom. */
+  employeeSatisfaction: number;
+  /** Rolling months of losses. AI closes assets that bleed for a year. */
+  monthsUnprofitable: number;
+  /** Local advertising spend per month. */
+  adBudget: number;
+}
+
+/** An unsolicited bid from an AI company for one of the player's assets. */
+export interface IncomingOffer {
+  id: string;
+  buildingId: string;
+  buildingName: string;
+  buyerId: string;
+  buyerName: string;
+  amount: number;
+  fairValue: number;
+  expiresTick: number;
+  rationale: string;
 }
 
 export interface Product {
@@ -237,6 +329,14 @@ export interface Product {
   obsolete: boolean;
   marketDemand: number;
   playerMarketShare: number;
+  /** Value ladder position — luxury goods behave as Veblen goods. */
+  segment: MarketSegment;
+  /** Public perception of quality, which lags the objective stat. */
+  perceivedQuality: number;
+  /** Rolling review score 0..5 that consumers actually read. */
+  reviewScore: number;
+  /** Month-of-year demand multipliers (index 0 = January). */
+  seasonality: number[];
 }
 
 export interface ProductInput {
@@ -283,6 +383,10 @@ export interface Economy {
   purchasingPowerIndex: number;
   realEstateBubble: number;
   moneySupply: number;
+  /** Live diesel price in USD/gallon — drives every freight quote. */
+  dieselPrice: number;
+  /** Months remaining in the current energy supply shock. */
+  fuelShockMonths: number;
 }
 
 export interface Notification {
@@ -326,18 +430,7 @@ export interface MovingEntity {
   cargo?: { kind: 'raw' | 'finished'; category: string };
 }
 
-export interface Goal {
-  id: string;
-  name: string;
-  description: string;
-  target: number;
-  current: number;
-  reward: number;
-  completed: boolean;
-  category: 'wealth' | 'expansion' | 'dominance' | 'innovation';
-  knowledgeReward: number;
-  deadlineYear: number | null;
-}
+// Goals removed — progression is driven by market performance, not scripted rewards.
 
 export interface Bond {
   id: string;
@@ -528,7 +621,8 @@ export interface GameState {
   camera: Camera;
   mapSize: number;
   seed: number;
-  goals: Goal[];
+  /** Unsolicited AI bids awaiting the player's decision. */
+  incomingOffers: IncomingOffer[];
   overlay: OverlayMode;
   paused: boolean;
   freight: FreightRoute[];
@@ -593,7 +687,7 @@ export type UIPanel =
   | 'finances'
   | 'supply_chain'
   | 'products'
-  | 'goals'
+  | 'offers'
   | 'settings'
   | 'research'
   | 'executives'

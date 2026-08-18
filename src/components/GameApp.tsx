@@ -9,6 +9,8 @@ import {
   setRentMultiplier, setMediaPolicy, startResearch, hireExecutive, spendKnowledge, intensiveTraining,
   issueBond, buyBond, issueShares, buyLand, sellLand, completeScouting,
   optimizeAllSupply, fundAdvertising, acquireTechnology, makePurchaseOffer, getAskingPrice,
+  acceptIncomingOffer, rejectIncomingOffer, removeRetailProduct, setWarehouseTier,
+  setMenuItemPrice, toggleMenuItem, setAdBudget,
 } from '../game/engine';
 import GameCanvas from './GameCanvas';
 import TopBar from './TopBar';
@@ -198,6 +200,19 @@ export default function GameApp() {
   const noopStrStrNull = useCallback((_a: string, _b: string | null) => {}, []);
   const noopStrNumNum = useCallback((_a: string, _b: number, _c: number) => {}, []);
 
+  const handleAcceptOffer = useCallback((offerId: string) => runAction(state => acceptIncomingOffer(state, offerId)), [runAction]);
+  const handleRejectOffer = useCallback((offerId: string) => runAction(state => rejectIncomingOffer(state, offerId)), [runAction]);
+  const handleRemoveProduct = useCallback((buildingId: string, productId: string) =>
+    runAction(state => removeRetailProduct(state, buildingId, productId)), [runAction]);
+  const handleSetWarehouseTier = useCallback((buildingId: string, tier: 'general' | 'cold' | 'hazmat') =>
+    runAction(state => setWarehouseTier(state, buildingId, tier)), [runAction]);
+  const handleSetMenuPrice = useCallback((buildingId: string, itemId: string, price: number) =>
+    runAction(state => setMenuItemPrice(state, buildingId, itemId, price)), [runAction]);
+  const handleToggleMenuItem = useCallback((buildingId: string, itemId: string) =>
+    runAction(state => toggleMenuItem(state, buildingId, itemId)), [runAction]);
+  const handleSetAdBudget = useCallback((buildingId: string, budget: number) =>
+    runAction(state => setAdBudget(state, buildingId, budget)), [runAction]);
+
   const handleMakeOffer = useCallback((buildingId: string, amount: number) => {
     runAction(state => makePurchaseOffer(state, buildingId, amount));
   }, [runAction]);
@@ -291,6 +306,13 @@ export default function GameApp() {
           onToggleAutoLoyalty={noopStr}
           onMakeOffer={handleMakeOffer}
           askingPriceFor={askingPriceFor}
+          onAcceptOffer={handleAcceptOffer}
+          onRejectOffer={handleRejectOffer}
+          onRemoveProduct={handleRemoveProduct}
+          onSetWarehouseTier={handleSetWarehouseTier}
+          onSetMenuPrice={handleSetMenuPrice}
+          onToggleMenuItem={handleToggleMenuItem}
+          onSetAdBudget={handleSetAdBudget}
         />
 
         {/* Build mode banner */}
