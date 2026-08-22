@@ -1,11 +1,22 @@
-import type { City, GameState, Building } from './types';
+import type { Building, City, GameState } from './types';
 
-// ============= ROAD NETWORK =============
-// Streets are a grid of segments spaced per-city, clipped to CITY_ROAD_RADIUS.
-// Vehicles may ONLY occupy road segments or parking spurs attached to a node.
+// ════════════════════════════════════════════════════════════════════
+// ROAD NETWORK
+// ════════════════════════════════════════════════════════════════════
+// Streets are a uniform grid clipped to the city's own radius.
+// Vehicles may ONLY occupy street centrelines and interstate right-of-way.
 
-export const CITY_ROAD_RADIUS = 13;
+/**
+ * Street spacing. This MUST match `isCityRoad` in world.ts, which is what
+ * stamps `tile.road` during map generation and therefore what the renderer
+ * actually draws. When these two drifted apart, vehicles drove along a
+ * lattice that was never painted — the "cars driving off-road" bug.
+ */
+export const STREET_SPACING = 4;
 export const PARKING_OFFSET = 1.0;
+
+/** Kept for callers that want a default extent; real extent is city.radius. */
+export const CITY_ROAD_RADIUS = 13;
 
 export interface RoadNode {
   id: number;
@@ -39,43 +50,43 @@ export interface RoadFrame {
   spacingY: number;
 }
 
+/**
+ * The street frame is anchored on the city centre with a uniform 4-tile
+ * spacing — identical to `isCityRoad` in world.ts. Do not "improve" this with
+ * per-city variation unless world.ts is changed in the same commit, or the
+ * painted roads and the driving graph will diverge again.
+ */
 export function cityRoadFrame(city: City): RoadFrame {
-  const h1 = Math.abs(Math.sin(city.x * 127.1 + city.y * 311.7) * 43758.5453) % 1;
-  const h2 = Math.abs(Math.sin(city.x * 269.5 + city.y * 183.3) * 24634.6345) % 1;
-  const h3 = Math.abs(Math.sin(city.x * 419.2 + city.y * 97.2) * 15731.7492) % 1;
-  const spacingX = [4, 5, 6][Math.floor(h1 * 3)];
-  const spacingY = [5, 6, 4][Math.floor(h2 * 3)];
-  const offsetX = Math.floor(h3 * spacingX);
-  const offsetY = Math.floor(h1 * spacingY);
   return {
-    originX: Math.floor(city.x / spacingX) * spacingX + offsetX,
-    originY: Math.floor(city.y / spacingY) * spacingY + offsetY,
-    spacingX,
-    spacingY,
+    originX: city.x,
+    originY: city.y,
+    spacingX: STREET_SPACING,
+    spacingY: STREET_SPACING,
   };
 }
 
 /** True when the integer tile lies on a street centreline of its city. */
 export function tileIsRoad(tileX: number, tileY: number, city: City): boolean {
-  if (Math.hypot(tileX - city.x, tileY - city.y) >= CITY_ROAD_RADIUS) return false;
-  const frame = cityRoadFrame(city);
-  const onVertical = (((tileX - frame.originX) % frame.spacingX) + frame.spacingX) % frame.spacingX === 0;
-  const onHorizontal = (((tileY - frame.originY) % frame.spacingY) + frame.spacingY) % frame.spacingY === 0;
-  return onVertical || onHorizontal;
+  const dx = tileX - city.x;
+  const dy = tileY - city.y;
+  if (Math.hypot(dx, dy) > city.radius) return false;
+  // Mirrors world.ts isCityRoad exactly.
+  return ((dx % STREET_SPACING) + STREET_SPACING) % STREET_SPACING === 0
+    || ((dy % STREET_SPACING) + STREET_SPACING) % STREET_SPACING === 0;
 }
 
 /** Any-city road test. */
 export function isRoadTile(cities: City[], x: number, y: number): boolean {
   for (const city of cities) {
-    if (Math.hypot(x - city.x, y - city.y) < CITY_ROAD_RADIUS && tileIsRoad(x, y, city)) return true;
+    if (tileIsRoad(x, y, city)) return true;
   }
   return false;
 }
 
 /**
- * The street intersection a highway ties into when heading toward (x, y).
- * Walks the city grid outward and returns the last node inside the built radius,
- * so the interstate terminates on a real street node rather than empty ground.
+ * The street intersection a highway ties into when heading toward (x, y). Walks
+ * the city grid outward and returns the last node inside the built radius, so the
+ * interstate terminates on a real street node rather than empty ground.
  */
 export function nearestIntersection(city: City, x: number, y: number): { x: number; y: number } {
   const frame = cityRoadFrame(city);
@@ -89,7 +100,7 @@ export function nearestIntersection(city: City, x: number, y: number): { x: numb
   for (let step = 1; step <= 12; step++) {
     const candX = centreX + dirX * step * frame.spacingX;
     const candY = centreY + dirY * step * frame.spacingY;
-    if (Math.hypot(candX - city.x, candY - city.y) > CITY_ROAD_RADIUS - 1) break;
+    if (Math.hypot(candX - city.x, candY - city.y) > city.radius - 1) break;
     bestX = candX;
     bestY = candY;
   }
@@ -98,12 +109,10 @@ export function nearestIntersection(city: City, x: number, y: number): { x: numb
 
 /**
  * Every tile the interstate occupies between two endpoints. The route is an
- * L-shape: along one axis, one turn, then the other — an unbroken chain with
- * no diagonal gaps.
+ * L-shape: along one axis, one turn, then the other — an unbroken chain.
  */
 export function highwayTiles(
-  from: { x: number; y: number },
-  to: { x: number; y: number },
+  from: { x: number; y: number }, to: { x: number; y: number },
 ): Array<[number, number]> {
   const startX = Math.round(from.x);
   const startY = Math.round(from.y);
@@ -155,6 +164,28 @@ export function highwayEdges(cities: City[]): Array<[City, City]> {
   return edges;
 }
 
+/**
+ * The interstate between two cities, tile for tile.
+ *
+ * This reproduces `highwayTiles` in world.ts EXACTLY — run east/west along the
+ * origin city's row, then north/south along the destination city's column.
+ * world.ts is what sets `tile.highway`, i.e. what actually gets painted, so
+ * any other route here would send freight across unpainted ground.
+ */
+export function cityHighway(fromCity: City, toCity: City): Array<[number, number]> {
+  const path: Array<[number, number]> = [];
+  const stepX = Math.sign(toCity.x - fromCity.x);
+  if (stepX !== 0) {
+    for (let x = fromCity.x; x !== toCity.x; x += stepX) path.push([x, fromCity.y]);
+  }
+  const stepY = Math.sign(toCity.y - fromCity.y);
+  if (stepY !== 0) {
+    for (let y = fromCity.y; y !== toCity.y; y += stepY) path.push([toCity.x, y]);
+  }
+  path.push([toCity.x, toCity.y]);
+  return path;
+}
+
 /** Cached highway tile set for the whole map. */
 let highwayTileCache: { signature: string; tiles: Set<string> } | null = null;
 
@@ -163,9 +194,7 @@ export function allHighwayTiles(cities: City[]): Set<string> {
   if (highwayTileCache && highwayTileCache.signature === signature) return highwayTileCache.tiles;
   const tiles = new Set<string>();
   for (const [a, b] of highwayEdges(cities)) {
-    const exit = nearestIntersection(a, b.x, b.y);
-    const entry = nearestIntersection(b, a.x, a.y);
-    for (const [x, y] of highwayTiles(exit, entry)) tiles.add(`${x},${y}`);
+    for (const [x, y] of cityHighway(a, b)) tiles.add(`${x},${y}`);
   }
   highwayTileCache = { signature, tiles };
   return tiles;
@@ -195,12 +224,7 @@ export function highwayProximity(cities: City[], x: number, y: number): number {
   return best;
 }
 
-/** The interstate between two cities, as drawn. */
-export function cityHighway(fromCity: City, toCity: City): Array<[number, number]> {
-  const exit = nearestIntersection(fromCity, toCity.x, toCity.y);
-  const entry = nearestIntersection(toCity, fromCity.x, fromCity.y);
-  return highwayTiles(exit, entry);
-}
+
 
 /** Spiral search for an off-road tile. */
 export function snapOffRoad(cities: City[], city: City, x: number, y: number): [number, number] {
@@ -220,12 +244,13 @@ export function snapOffRoad(cities: City[], city: City, x: number, y: number): [
   return [nx + 2, ny + 2];
 }
 
-// ============= NETWORK GRAPH =============
+// ════════════════════════════════════════════════════════════════════
+// NETWORK GRAPH
+// ════════════════════════════════════════════════════════════════════
 const networkCache = new Map<string, { signature: string; network: RoadNetwork }>();
 
-function networkSignature(city: City, buildingCount: number): string {
-  return `${city.x.toFixed(2)}:${city.y.toFixed(2)}:${buildingCount}`;
-}
+const networkSignature = (city: City, buildingCount: number) =>
+  `${city.x.toFixed(2)}:${city.y.toFixed(2)}:${buildingCount}`;
 
 export function getRoadNetwork(state: GameState, city: City): RoadNetwork {
   const cityBuildings = state.buildings.filter(b => b.cityId === city.id);
@@ -234,8 +259,7 @@ export function getRoadNetwork(state: GameState, city: City): RoadNetwork {
   if (cached && cached.signature === signature) return cached.network;
 
   const frame = cityRoadFrame(city);
-  const minSpacing = Math.min(frame.spacingX, frame.spacingY);
-  const steps = Math.ceil(CITY_ROAD_RADIUS / minSpacing);
+  const steps = Math.ceil(city.radius / STREET_SPACING);
   const nodes: RoadNode[] = [];
   const lookup = new Map<string, number>();
 
@@ -243,10 +267,11 @@ export function getRoadNetwork(state: GameState, city: City): RoadNetwork {
     for (let j = -steps; j <= steps; j++) {
       const x = frame.originX + i * frame.spacingX;
       const y = frame.originY + j * frame.spacingY;
-      if (Math.hypot(x - city.x, y - city.y) > CITY_ROAD_RADIUS) continue;
-      const id = nodes.length;
-      lookup.set(`${x},${y}`, id);
-      nodes.push({ id, x, y, neighbors: [] });
+      // Only keep intersections that are genuinely painted as road, so the
+      // graph is a strict subset of the visible street network.
+      if (!tileIsRoad(x, y, city)) continue;
+      lookup.set(`${x},${y}`, nodes.length);
+      nodes.push({ id: nodes.length, x, y, neighbors: [] });
     }
   }
 
@@ -337,14 +362,11 @@ export function randomRoadRoute(
   if (!start) return [];
   const destination = network.nodes[Math.floor(rand() * network.nodes.length)];
   const path = findRoadPath(network, start.id, destination.id);
-  if (path.length === 0) return [];
-  if (rand() < 0.35) {
-    const bays = network.parking.filter(slot => slot.nodeId === destination.id);
-    if (bays.length > 0) {
-      const bay = bays[Math.floor(rand() * bays.length)];
-      path.push([bay.x, bay.y]);
-    }
-  }
+  // Every waypoint returned here is a street intersection, and consecutive
+  // intersections are orthogonally adjacent, so interpolating between them
+  // can never leave the road surface. Kerbside parking bays are deliberately
+  // NOT appended: a bay sits one tile off the centreline, which would put the
+  // vehicle on a non-road tile at the end of its trip.
   return path;
 }
 
@@ -379,14 +401,13 @@ export function buildFreightPolyline(state: GameState, supplier: Building, buyer
   const highway = cityHighway(fromCity, toCity);
   const localIn = findRoadPath(toNetwork, destEntry.id, destEnd.id);
 
-  const segments: Array<[number, number]> = [
+  return [
     [supplier.x, supplier.y],
     ...localOut,
     ...highway.slice(1),
     ...localIn.slice(1),
     [buyer.x, buyer.y],
   ];
-  return segments;
 }
 
 /** Samples a position along a polyline at 0..1 progress. */

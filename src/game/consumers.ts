@@ -1,6 +1,8 @@
-import type { City, Product, Building, GameState, IncomeTier } from './types';
+import type { Building, City, GameState, IncomeTier, Product } from './types';
 
-// ============= HOUSEHOLD INCOME SEGMENTATION =============
+// ════════════════════════════════════════════════════════════════════
+// HOUSEHOLD INCOME SEGMENTATION
+// ════════════════════════════════════════════════════════════════════
 /**
  * Each city's households are split into three income tiers. Every month each
  * tier gets a discretionary budget: what is left after rent, food and transport.
@@ -14,7 +16,7 @@ export function updateHouseholdBudgets(state: GameState) {
     // Essentials share of income by tier (rent + food + transport).
     const essentials: Record<IncomeTier, number> = { low: 0.78, middle: 0.58, affluent: 0.40 };
 
-    city.discretionaryBudget = {
+    city.discretionary = {
       low: monthlyGross * unemployedPenalty * (1 - essentials.low),
       middle: monthlyGross * unemployedPenalty * (1 - essentials.middle),
       affluent: monthlyGross * unemployedPenalty * (1 - essentials.affluent),
@@ -73,23 +75,25 @@ export function categorySpendPool(city: City, product: Product): number {
   // credit extends it briefly, then deleveraging crushes it.
   const buffer = city.householdSavingsMonths > 0 ? 1 : 0.92;
   const credit = city.householdDebtRatio < 0.35
-    ? 1 + city.householdDebtRatio * 0.25 : 1 - (city.householdDebtRatio - 0.35) * 1.2;
+    ? 1 + city.householdDebtRatio * 0.25
+    : 1 - (city.householdDebtRatio - 0.35) * 1.2;
   const balanceSheetFactor = Math.max(0.5, buffer * credit);
   return households * balanceSheetFactor * (
-    city.incomeMix.low * city.discretionaryBudget.low * tierWeight.low +
-    city.incomeMix.middle * city.discretionaryBudget.middle * tierWeight.middle +
-    city.incomeMix.affluent * city.discretionaryBudget.affluent * tierWeight.affluent
+    city.incomeMix.low * city.discretionary.low * tierWeight.low
+    + city.incomeMix.middle * city.discretionary.middle * tierWeight.middle
+    + city.incomeMix.affluent * city.discretionary.affluent * tierWeight.affluent
   );
 }
 
-// ============= BEHAVIOURAL ECONOMICS =============
-
+// ════════════════════════════════════════════════════════════════════
+// BEHAVIOURAL ECONOMICS
+// ════════════════════════════════════════════════════════════════════
 /**
  * Non-linear price response — a logistic curve rather than a power law.
  * Small changes near the reference price barely register (consumers don't
  * notice ±3%), but crossing a threshold triggers a sharp reaction, and the
- * curve flattens again at extremes (die-hards stay, cheapskates stay away).
- * Luxury goods keep a Veblen band: demand peaks slightly ABOVE parity.
+ * curve flattens again at extremes. Luxury goods keep a Veblen band: demand
+ * peaks slightly ABOVE parity.
  */
 export function priceResponseLogit(product: Product, priceMultiplier: number, confidence: number): number {
   const brandStrength = product.brand / 100;
@@ -99,11 +103,9 @@ export function priceResponseLogit(product: Product, priceMultiplier: number, co
 
   if (product.segment === 'luxury' && product.brand > 70) {
     // Veblen band: demand peaks around 1.3x then collapses past 1.6x.
-    const veblenPeak = 1.3;
-    const distance = Math.abs(priceMultiplier - veblenPeak);
+    const distance = Math.abs(priceMultiplier - 1.3);
     const veblen = Math.max(0.25, 1.35 - distance * 1.1);
-    const luxuryConfidence = Math.pow(Math.max(0.05, confidence / 100), 2.2);
-    return veblen * luxuryConfidence;
+    return veblen * Math.pow(Math.max(0.05, confidence / 100), 2.2);
   }
 
   // Logistic drop centred on the reference price, steepness by sensitivity.
@@ -111,13 +113,12 @@ export function priceResponseLogit(product: Product, priceMultiplier: number, co
   // Anchored at ~0.6 when at parity so other factors can push demand above 1.
   const normalized = logit / (1 / (1 + Math.exp(0)));
   const confidenceExponent = product.demandIndex > 70 ? 0.35 : product.segment === 'premium' ? 1.7 : 1.1;
-  const confidenceTerm = Math.pow(Math.max(0.05, confidence / 100), confidenceExponent);
-  return Math.max(0.02, normalized * 0.9) * confidenceTerm;
+  return Math.max(0.02, normalized * 0.9) * Math.pow(Math.max(0.05, confidence / 100), confidenceExponent);
 }
 
 /**
- * Anchoring + loss aversion. The first price seen sets the anchor; a rise
- * above it hurts ~2.25x more than an equivalent cut helps.
+ * Anchoring + loss aversion. The first price seen sets the anchor; a rise above
+ * it hurts ~2.25x more than an equivalent cut helps.
  */
 export function anchoringMultiplier(shelfPrice: number, anchorPrice: number): number {
   if (anchorPrice <= 0) return 1;
@@ -131,11 +132,11 @@ export function anchoringMultiplier(shelfPrice: number, anchorPrice: number): nu
  * Scarcity mentality: "only 3 left!". Thin stock raises conversion — a nearly
  * empty shelf signals the item is desirable. Empty shelf = lost sale entirely.
  */
-export function scarcityMultiplier(stock: number, capacity: number, desired: number): number {
+export function scarcityMultiplier(stock: number, desired: number): number {
   if (stock <= 0) return 0;
   if (desired <= 0) return 1;
   const stockRatio = stock / Math.max(1, desired);
-  if (stockRatio < 0.3) return 1.22;  // "nearly gone" — urgency
+  if (stockRatio < 0.3) return 1.22; // "nearly gone" — urgency
   if (stockRatio < 0.6) return 1.10;
   return 1;
 }
@@ -150,9 +151,7 @@ export function updateSocialProof(building: Building, sold: number, expected: nu
   building.socialProof += (target - building.socialProof) * 0.015;
 }
 
-export function socialProofMultiplier(proof: number): number {
-  return 1 + proof * 0.55;
-}
+export const socialProofMultiplier = (proof: number) => 1 + proof * 0.55;
 
 /**
  * Impulse purchases: cheap, small items fly off the shelf with foot traffic.
@@ -166,40 +165,46 @@ export function impulseMultiplier(product: Product, priceMultiplier: number, tra
 }
 
 /**
- * Bulk buying: when staples get cheap, households stock up — buying 2-3x their
- * normal volume. This flattens the demand curve at deep discounts (a 50% off
- * sale on bread sells 30% more, not 100% more, because pantries fill up).
+ * Bulk buying: when staples get cheap, households stock up. This flattens the
+ * demand curve at deep discounts — a 50% off sale on bread sells 30% more, not
+ * 100% more, because pantries fill up.
  */
 export function bulkBuyingMultiplier(product: Product, priceMultiplier: number): number {
   if (product.demandIndex < 60) return 1;
   if (priceMultiplier >= 1) return 1;
-  // Below parity, extra units taper off logarithmically.
-  const discount = 1 - priceMultiplier;
-  return 1 + Math.log1p(discount * 4) * 0.8;
+  return 1 + Math.log1p((1 - priceMultiplier) * 4) * 0.8;
 }
 
 /**
  * Brand switching costs. A store's habitual base migrates slowly — at most
  * ~15% of customers switch per month even when a rival is clearly better.
  */
-export function switchingCostMultiplier(
-  building: Building, competitiveAppeal: number,
-): number {
+export function switchingCostMultiplier(building: Building, competitiveAppeal: number): number {
   const loyaltyFloor = building.loyalCustomerBase * 0.55;
   const stickiness = loyaltyFloor + (1 - loyaltyFloor) * competitiveAppeal;
   const expected = Math.max(0.3, competitiveAppeal);
   return Math.max(0.3, stickiness / expected);
 }
 
+/** The Capitalism rating model: price / quality / brand blended by weight. */
+export function productRating(product: Product, priceMultiplier: number): number {
+  const priceScore = Math.max(0, 100 - Math.max(0, priceMultiplier - 0.6) * 90);
+  return (
+    priceScore * product.priceWeight
+    + product.perceivedQuality * product.qualityWeight
+    + product.brand * product.brandWeight
+  ) / 100;
+}
+
 /**
- * Full demand stack for one retail line. Returns desired units/hr before
- * stock constraints.
+ * Full demand stack for one retail line. Returns desired units/hr before stock
+ * constraints.
  */
 export function retailDemand(
   city: City, product: Product, building: Building, traffic: number,
-  confidence: number, isDaytime: boolean, index: Map<string, Building[]>,
+  confidence: number, isDaytime: boolean, outletsInCity: number, outletsCarrying: number,
 ): number {
-  const shelfPrice = product.currentPrice * building.pricingMultiplier;
+  const shelfPrice = product.retailPrice * building.pricingMultiplier;
   const necessity = product.demandIndex / 100;
   const wageRatio = city.wageRate / 22;
   const incomeElasticity = necessity > 0.7 ? 0.25 : necessity > 0.4 ? 0.9 : 1.6;
@@ -210,21 +215,17 @@ export function retailDemand(
   const proof = socialProofMultiplier(building.socialProof);
   // Category network effects: communication/computing goods gain value as the
   // installed base grows (Metcalfe-like, capped).
-  const installedBase = product.marketDemand; // 0-100 adoption proxy
   const networkEffect = (product.category === 'Communication' || product.category === 'Computers')
-    ? 1 + Math.min(0.35, Math.log10(1 + installedBase) * 0.16) : 1;
+    ? 1 + Math.min(0.35, Math.log10(1 + product.marketDemand) * 0.16) : 1;
   const impulse = impulseMultiplier(product, building.pricingMultiplier, traffic);
   const bulk = bulkBuyingMultiplier(product, building.pricingMultiplier);
   const fit = incomeFit(city, product);
 
   // Budget ceiling from the city's segmented household spend.
   const spendPool = categorySpendPool(city, product);
-  const unitsPerMonth = spendPool / Math.max(0.5, shelfPrice);
-  const budgetCeiling = unitsPerMonth / 30 / 14;
+  const budgetCeiling = (spendPool / Math.max(0.5, shelfPrice)) / 30 / 14;
 
-  const outletsHere = (index.get(city.id) ?? [])
-    .filter(b => b.products.includes(product.id)).length;
-  const shareOfMarket = 1 / Math.max(1, outletsHere * 0.6);
+  const shareOfMarket = 1 / Math.max(1, outletsCarrying * 0.6);
 
   const confidenceExp = necessity > 0.7 ? 0.35 : 1.2;
   const confidenceTerm = Math.pow(Math.max(0.05, confidence / 100), confidenceExp);
@@ -239,22 +240,13 @@ export function retailDemand(
   const searchFriction = Math.max(0.5, Math.min(1.25,
     0.68 + product.brand / 250 + traffic / 500 + building.loyalCustomerBase * 0.25
       - Math.log10(Math.max(1, shelfPrice)) * 0.08));
-  const switching = switchingCostMultiplier(building,
-    Math.max(0.25, rating / 70));
-  const raw = (building.capacity / 14 * 8 / Math.max(1, (index.get(city.id) ?? []).length))
+  const switching = switchingCostMultiplier(building, Math.max(0.25, rating / 70));
+
+  const raw = (building.capacity / 14 * 8 / Math.max(1, outletsInCity))
     * (0.4 + (traffic / 100) * 0.95)
     * priceTerm * confidenceTerm * incomeTerm * fit
     * anchor * proof * impulse * bulk * ratingTerm * searchFriction * switching * networkEffect
     * (isDaytime ? 1 : 0.3);
 
   return Math.min(raw, budgetCeiling * shareOfMarket * 2.5);
-}
-
-export function productRating(product: Product, priceMultiplier: number): number {
-  const priceScore = Math.max(0, 100 - Math.max(0, priceMultiplier - 0.6) * 90);
-  return (
-    priceScore * product.priceWeight +
-    product.perceivedQuality * product.qualityWeight +
-    product.brand * product.brandWeight
-  ) / 100;
 }

@@ -1,13 +1,14 @@
-import type { GameState, Bond, CreditRating, Company, BondQuote } from './types';
-import { generateId } from './engine';
+import type { Bond, BondQuote, CreditRating, GameState } from './types';
+import { notify, news, money } from './systems';
+import { uid } from './world';
 
-const TICKS_PER_MONTH = 24 * 30;
-const TICKS_PER_YEAR = TICKS_PER_MONTH * 12;
-
+// ════════════════════════════════════════════════════════════════════
+// TERM STRUCTURE
+// ════════════════════════════════════════════════════════════════════
 /**
- * Term structure of interest rates. The 3-month, 2-year and 10-year yields
- * move together but not identically — the slope and shape carry real
- * information about the business cycle and the central bank stance.
+ * The 3-month, 2-year and 10-year yields move together but not identically —
+ * the slope and shape carry real information about the business cycle and the
+ * central bank stance.
  */
 export interface YieldCurvePoint {
   tenorYears: 0.25 | 2 | 10;
@@ -20,22 +21,8 @@ const RATING_SPREADS: Record<CreditRating, number> = {
   CCC: 7.2, CC: 9.2, C: 12, D: 18,
 };
 
-export function ratingSpread(rating: CreditRating): number {
-  return RATING_SPREADS[rating] ?? 6;
-}
-
-/** Compute a synthetic yield curve from the policy rate, expectations and rating mix. */
-export function computeYieldCurve(state: GameState): YieldCurvePoint[] {
-  const policy = state.economy.interestRate;
-  const exp = expectedPolicyPath(state);
-  const termPremium10y = 1.2;
-  const termPremium2y = 0.3;
-  const termPremium3m = -0.15;
-  return [
-    { tenorYears: 0.25, yield: Math.max(0, policy * 0.6 + termPremium3m), termPremium: termPremium3m },
-    { tenorYears: 2,    yield: Math.max(0, exp.year2 + termPremium2y), termPremium: termPremium2y },
-    { tenorYears: 10,   yield: Math.max(0, exp.year10 + termPremium10y), termPremium: termPremium10y },
-  ];
+export function ratingSpread(rating: string): number {
+  return RATING_SPREADS[rating as CreditRating] ?? 6;
 }
 
 function expectedPolicyPath(state: GameState): { year2: number; year10: number } {
@@ -49,16 +36,34 @@ function expectedPolicyPath(state: GameState): { year2: number; year10: number }
   };
 }
 
+export function computeYieldCurve(state: GameState): YieldCurvePoint[] {
+  const policy = state.economy.interestRate;
+  const exp = expectedPolicyPath(state);
+  const tp10 = 1.2, tp2 = 0.3, tp3m = -0.15;
+  const y3m = Math.max(0, policy * 0.6 + tp3m);
+  const y2 = Math.max(0, exp.year2 + tp2);
+  const y10 = Math.max(0, exp.year10 + tp10);
+  // Keep the economy's published curve in sync so the UI and engine agree.
+  state.economy.threeMonthYield = y3m;
+  state.economy.twoYearYield = y2;
+  state.economy.tenYearYield = y10;
+  return [
+    { tenorYears: 0.25, yield: y3m, termPremium: tp3m },
+    { tenorYears: 2, yield: y2, termPremium: tp2 },
+    { tenorYears: 10, yield: y10, termPremium: tp10 },
+  ];
+}
+
 /**
- * Build the initial bond inventory. The player does not start with bonds but
- * the AI has issued a few and they become tradeable immediately.
+ * Build the initial bond inventory. The player starts with none, but the AI has
+ * issued a few and they become tradeable immediately.
  */
 export function generateInitialBonds(state: GameState): Bond[] {
   const startYear = state.year;
   return state.companies.slice(1, 5).map((company, index) => {
     const termYears = ([5, 10, 15] as const)[index] ?? 5;
     return {
-      id: generateId(),
+      id: uid('bond'),
       issuerId: company.id,
       faceValue: 1000,
       quantity: 4000 + index * 2000,
@@ -66,7 +71,7 @@ export function generateInitialBonds(state: GameState): Bond[] {
       issueYear: startYear - 1,
       maturityYear: startYear - 1 + termYears,
       couponRate: state.economy.interestRate + ratingSpread(company.bondRating) + termYears * 0.08,
-      rating: company.bondRating,
+      rating: company.bondRating as CreditRating,
       marketPrice: 96 + index * 2.5,
       holderId: null,
       defaulted: false,
@@ -79,7 +84,6 @@ export function yieldToMaturity(quote: BondQuote): number {
   const yearsLeft = quote.maturityYear - quote.currentYear;
   if (yearsLeft <= 0) return 0;
   const annualCoupon = quote.faceValue * (quote.couponRate / 100);
-  // Approximate YTM for a bond trading below face value.
   const gain = (quote.faceValue - quote.marketPrice) / yearsLeft;
   return ((annualCoupon + gain) / ((quote.faceValue + quote.marketPrice) / 2)) * 100;
 }
@@ -91,39 +95,34 @@ export function markToMarket(state: GameState) {
   for (const bond of state.bonds) {
     if (bond.defaulted) { bond.marketPrice = 5; continue; }
     const yearsLeft = bond.maturityYear - state.year;
-    if (yearsLeft <= 0) {
-      bond.marketPrice = bond.faceValue;
-      continue;
-    }
+    if (yearsLeft <= 0) { bond.marketPrice = bond.faceValue; continue; }
     const required = y10 + ratingSpread(bond.rating) + (bond.termYears - 10) * 0.05;
     // Inverse price-yield relationship: required yield drives price.
-    const impliedPrice = Math.max(35, Math.min(125, bond.faceValue * (bond.couponRate / required)));
-    bond.marketPrice = impliedPrice;
+    bond.marketPrice = Math.max(35, Math.min(125, bond.faceValue * (bond.couponRate / required)));
   }
 }
 
-/** Quarterly coupon payments: bond holders collect face × coupon × quantity / 4. */
+/** Quarterly coupons: holders collect face × coupon × quantity / 4. */
 export function payCoupons(state: GameState) {
   if (state.month % 3 !== 0) return;
+  const player = state.companies.find(c => c.id === state.playerCompanyId);
   for (const bond of state.bonds) {
     if (bond.defaulted) continue;
     const quarterly = bond.faceValue * bond.couponRate / 100 * bond.quantity / 4;
-    // The issuer pays.
     const issuer = state.companies.find(c => c.id === bond.issuerId);
     if (!issuer) continue;
     if (issuer.cash < quarterly) {
       bond.defaulted = true;
-      addNewsTicker(state, `${issuer.name} defaults on bond coupon — market price collapses`, 'danger');
+      news(state, `${issuer.name} defaults on a bond coupon — market price collapses`, 'breaking');
       continue;
     }
     issuer.cash -= quarterly;
     issuer.expenses += quarterly;
-    // The player collects if they hold it.
+
     if (bond.holderId === 'player') {
-      const player = state.companies.find(c => c.isPlayer);
       if (player) {
         player.cash += quarterly;
-        addNewsTicker(state, `Bond coupon: $${fmt(quarterly)} from ${issuer.name}`, 'info');
+        notify(state, `Bond coupon: ${money(quarterly)} from ${issuer.name}.`, 'success');
       }
     } else if (bond.holderId) {
       const holder = state.companies.find(c => c.id === bond.holderId);
@@ -132,80 +131,65 @@ export function payCoupons(state: GameState) {
   }
 }
 
-function addNewsTicker(state: GameState, text: string, type: 'info' | 'warning' | 'danger' | 'breaking' = 'info') {
-  state.stockMarket.ticker.unshift({ id: generateId(), text, type, tick: state.tick });
-  if (state.stockMarket.ticker.length > 30) state.stockMarket.ticker.pop();
-}
-
-function fmt(n: number): string {
-  if (Math.abs(n) >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + 'B';
-  if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
-  if (Math.abs(n) >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return n.toFixed(0);
-}
-
-/** Buy a bond with the player's cash. Trades are at quoted market price. */
-export function buyBond(state: GameState, bondId: string): GameState {
+/** Buy a bond at the quoted market price. */
+export function buyBond(state: GameState, bondId: string) {
   const bond = state.bonds.find(b => b.id === bondId);
-  const player = state.companies.find(c => c.isPlayer);
-  if (!bond || !player) return state;
-  if (bond.defaulted) return state;
-  if (bond.holderId && bond.holderId !== 'player') return state;
-
+  const player = state.companies.find(c => c.id === state.playerCompanyId);
+  if (!bond || !player || bond.defaulted) return;
+  if (bond.holderId && bond.holderId !== 'player') {
+    notify(state, 'That issue is already held by another investor.', 'warning');
+    return;
+  }
   const cost = bond.faceValue * bond.quantity * bond.marketPrice / 100;
   if (player.cash < cost) {
-    addNewsTicker(state, `Insufficient cash to buy $${fmt(cost)} of ${state.companies.find(c => c.id === bond.issuerId)?.name ?? ''} bonds`, 'warning');
-    return state;
+    notify(state, `Need ${money(cost)} to buy that block.`, 'danger');
+    return;
   }
   player.cash -= cost;
   bond.holderId = 'player';
-  return { ...state };
+  const issuer = state.companies.find(c => c.id === bond.issuerId);
+  notify(state, `Bought ${money(cost)} of ${issuer?.name ?? ''} ${bond.maturityYear} bonds at ${bond.marketPrice.toFixed(1)}.`, 'success');
 }
 
-export function sellBond(state: GameState, bondId: string): GameState {
+export function sellBond(state: GameState, bondId: string) {
   const bond = state.bonds.find(b => b.id === bondId);
-  const player = state.companies.find(c => c.isPlayer);
-  if (!bond || !player) return state;
-  if (bond.holderId !== 'player') return state;
+  const player = state.companies.find(c => c.id === state.playerCompanyId);
+  if (!bond || !player || bond.holderId !== 'player') return;
   const proceeds = bond.faceValue * bond.quantity * bond.marketPrice / 100;
   player.cash += proceeds;
   bond.holderId = null;
-  return { ...state };
+  notify(state, `Sold bonds for ${money(proceeds)} at ${bond.marketPrice.toFixed(1)} per 100 face.`, 'info');
 }
 
-export function issueBond(state: GameState, amount: number, termYears: 5 | 10 | 15): GameState {
-  const company = state.companies.find(c => c.isPlayer);
-  if (!company || amount < 1_000_000) return state;
-  // Net-asset based capacity (60%), same rule as bank loans — prevents the
+export function issueBond(state: GameState, amount: number, termYears: 5 | 10 | 15) {
+  const company = state.companies.find(c => c.id === state.playerCompanyId);
+  if (!company) return;
+  // Net-asset based capacity (60%), the same rule as bank loans — prevents the
   // issue-then-capacity-grows-then-issue-more pyramid.
   const capacity = Math.max(0, (company.totalAssets - company.debt) * 0.6);
   const issueAmount = Math.min(amount, capacity);
-  if (issueAmount <= 0) return state;
+  if (issueAmount < 1_000_000) {
+    notify(state, `Borrowing capacity exhausted — you can still issue ${money(Math.max(0, capacity))}.`, 'warning');
+    return;
+  }
   const faceValue = 1000;
   const quantity = Math.floor(issueAmount / faceValue);
   const couponRate = state.economy.interestRate + ratingSpread(company.bondRating) + termYears * 0.08;
-  const bond: Bond = {
-    id: generateId(),
-    issuerId: company.id,
-    faceValue,
-    quantity,
-    termYears,
-    issueYear: state.year,
-    maturityYear: state.year + termYears,
-    couponRate,
-    rating: company.bondRating,
-    marketPrice: 100,
-    holderId: null,
-    defaulted: false,
-  };
-  state.bonds.push(bond);
-  company.cash += faceValue * quantity;
-  company.debt += faceValue * quantity;
-  return { ...state };
+  state.bonds.push({
+    id: uid('bond'), issuerId: company.id, faceValue, quantity, termYears,
+    issueYear: state.year, maturityYear: state.year + termYears, couponRate,
+    rating: company.bondRating as CreditRating, marketPrice: 100, holderId: null, defaulted: false,
+  });
+  const raised = faceValue * quantity;
+  company.cash += raised;
+  company.debt += raised;
+  notify(state, `Issued ${money(raised)} of ${termYears}-year bonds at ${couponRate.toFixed(2)}%.`, 'success');
+  news(state, `${company.name} prices ${money(raised)} of ${termYears}-year debt at ${couponRate.toFixed(2)}%`, 'info');
 }
 
 /** Yearly: matured bonds either redeem or default. */
 export function settleBonds(state: GameState) {
+  const player = state.companies.find(c => c.id === state.playerCompanyId);
   for (const bond of state.bonds) {
     if (bond.defaulted) continue;
     if (bond.maturityYear > state.year) continue;
@@ -214,17 +198,21 @@ export function settleBonds(state: GameState) {
     const redemption = bond.faceValue * bond.quantity;
     if (issuer.cash < redemption) {
       bond.defaulted = true;
-      addNewsTicker(state, `${issuer.name} defaults on maturing bonds — a $${fmt(redemption)} hole`, 'breaking');
+      news(state, `${issuer.name} defaults on maturing bonds — a ${money(redemption)} hole`, 'breaking');
       continue;
     }
     issuer.cash -= redemption;
+    issuer.debt = Math.max(0, issuer.debt - redemption);
     if (bond.holderId === 'player') {
-      const player = state.companies.find(c => c.isPlayer);
       if (player) {
         player.cash += redemption;
-        addNewsTicker(state, `Bond matured: principal $${fmt(redemption)} returned`, 'info');
+        notify(state, `Bond matured: ${money(redemption)} principal returned.`, 'success');
       }
+    } else if (bond.holderId) {
+      const holder = state.companies.find(c => c.id === bond.holderId);
+      if (holder) holder.cash += redemption;
     }
     bond.marketPrice = 0;
   }
+  state.bonds = state.bonds.filter(b => !(b.defaulted && b.marketPrice === 0 && b.holderId === null));
 }
