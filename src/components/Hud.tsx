@@ -62,7 +62,10 @@ export function TopBar({ s, onSpeed, onOpen }: {
           <Btn variant="warn" onClick={() => onOpen('offers')}>Offers · {s.offers.length}</Btn>
         )}
         <Btn onClick={() => onOpen('economy')}>Economy</Btn>
+        <Btn onClick={() => onOpen('companies')}>Companies</Btn>
         <Btn onClick={() => onOpen('market')}>Markets</Btn>
+        <Btn onClick={() => onOpen('regional')}>Regional</Btn>
+        <Btn onClick={() => onOpen('policy')}>Policy</Btn>
         <Btn onClick={() => onOpen('treasury')}>Treasury</Btn>
         <Btn onClick={() => onOpen('finance')}>Finance</Btn>
         <Btn onClick={() => onOpen('rivals')}>Rivals</Btn>

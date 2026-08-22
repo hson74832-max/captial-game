@@ -178,8 +178,15 @@ export function getQuotes(state: GameState, buyer: Building, productId: string):
           : s.transferPricingMode === 'custom' ? product.productionCost * s.transferPriceMultiplier
           : product.currentPrice;
       } else if (s.type === 'seaport') {
-        // Imports price off the world market plus FX and tariff pressure.
-        list = product.currentPrice * 1.14 * importCostMultiplier(state);
+        // ── Seaports price off the WORLD market, never the national spot ──
+        // The old code used `product.currentPrice * 1.14`, which let a player
+        // corner the domestic market, watch the national quote collapse, then
+        // buy the whole import terminal out at the depressed price and resell
+        // at a markup once it recovered. Ports now reference an anchored world
+        // benchmark that no single domestic actor can move.
+        const world = state.globalMarket.price[product.id] ?? product.basePrice * 0.95;
+        const anchor = Math.max(product.basePrice * 0.9, world);
+        list = anchor * 1.14 * importCostMultiplier(state);
       } else {
         list = product.currentPrice * (0.97 + s.staffSkill * 0.006) * s.sellPriceMultiplier;
       }

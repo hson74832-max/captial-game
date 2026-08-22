@@ -84,19 +84,22 @@ export const BUILDING_CONFIGS: Record<BuildingType, BuildingConfig> = {
   // they take roughly the same number of working hours to mobilise, and the
   // interesting differentiator is cost. Three days is enough to be visible
   // without making the player wait.
-  farm: { name: 'Farm', icon: '🌾', cost: 1_400_000, capacity: 900, employees: 14, group: 'production', color: '#a3701f', roof: '#c8912c', blurb: 'Grows crops and raises livestock. Seasonal yields, weather risk.', height: 0.55 },
-  mine: { name: 'Mine', icon: '⛏️', cost: 3_200_000, capacity: 1200, employees: 26, group: 'production', color: '#6b6f76', roof: '#8b9099', blurb: 'Extracts the deposit beneath it. Finite reserves.', height: 0.7 },
-  factory: { name: 'Factory', icon: '🏭', cost: 5_600_000, capacity: 2200, employees: 65, group: 'production', color: '#7c6f8f', roof: '#a094b5', blurb: 'Converts inputs into intermediates and finished goods.', height: 1.05 },
-  warehouse: { name: 'Distribution Hub', icon: '📦', cost: 2_400_000, capacity: 9000, employees: 22, group: 'production', color: '#5a7f93', roof: '#7ea6bd', blurb: 'Bulk storage. Cuts freight costs for nearby stores.', height: 0.75 },
-  retail_store: { name: 'Retail Store', icon: '🏬', cost: 1_800_000, capacity: 700, employees: 18, group: 'commerce', color: '#2f7f6f', roof: '#41a894', blurb: 'Sells consumer goods. Traffic and price drive volume.', height: 0.85 },
-  cafe: { name: 'Café', icon: '☕', cost: 620_000, capacity: 700, employees: 9, group: 'commerce', color: '#8a5a34', roof: '#b57a49', blurb: 'Morning trade. Small footprint, fast payback.', height: 0.6 },
-  fast_food: { name: 'Fast Food', icon: '🍔', cost: 980_000, capacity: 620, employees: 12, group: 'commerce', color: '#b8473f', roof: '#e06a5c', blurb: 'High volume, thin ticket, lunch-peaked.', height: 0.62 },
-  restaurant: { name: 'Restaurant', icon: '🍽️', cost: 1_650_000, capacity: 340, employees: 14, group: 'commerce', color: '#7a3f63', roof: '#a35b87', blurb: 'Evening covers, high ticket, high food cost.', height: 0.8 },
-  bar: { name: 'Bar', icon: '🍺', cost: 1_150_000, capacity: 380, employees: 12, group: 'commerce', color: '#4a3f80', roof: '#6c5fae', blurb: 'Night trade. Strong margins, licence costs.', height: 0.72 },
-  apartment: { name: 'Apartment Block', icon: '🏢', cost: 8_500_000, capacity: 90, employees: 0, group: 'property', color: '#5d6b8a', roof: '#8494b5', blurb: 'Residential rental income. Slow fill, stable yield.', height: 1.9 },
-  office: { name: 'Office Tower', icon: '🏙️', cost: 11_000_000, capacity: 70, employees: 0, group: 'property', color: '#3f5a75', roof: '#6d8dab', blurb: 'Commercial leases tied to business confidence.', height: 2.3 },
-  hq: { name: 'Headquarters', icon: '🏛️', cost: 6_200_000, capacity: 120, employees: 40, group: 'corporate', color: '#8d7b3f', roof: '#c0aa5c', blurb: 'Executives lift group-wide productivity.', height: 1.6 },
-  lab: { name: 'R&D Lab', icon: '🔬', cost: 4_800_000, capacity: 80, employees: 30, group: 'corporate', color: '#2f6f8f', roof: '#4fa2c4', blurb: 'Runs research that raises quality and cuts costs.', height: 1.1 },
+  // ── Starting staff: small, realistic day-one headcounts ──
+  // Upgrades multiply capacity ×1.28 and headcount ×1.22 per level, so a
+  // level-5 fast food has ~5 staff, a level-5 factory has ~22, etc.
+  farm: { name: 'Farm', icon: '🌾', cost: 1_400_000, capacity: 900, employees: 3, group: 'production', color: '#a3701f', roof: '#c8912c', blurb: 'Grows crops and raises livestock. Seasonal yields, weather risk.', height: 0.55 },
+  mine: { name: 'Mine', icon: '⛏️', cost: 3_200_000, capacity: 1200, employees: 5, group: 'production', color: '#6b6f76', roof: '#8b9099', blurb: 'Extracts the deposit beneath it. Finite reserves.', height: 0.7 },
+  factory: { name: 'Factory', icon: '🏭', cost: 5_600_000, capacity: 2200, employees: 8, group: 'production', color: '#7c6f8f', roof: '#a094b5', blurb: 'Converts inputs into intermediates and finished goods.', height: 1.05 },
+  warehouse: { name: 'Distribution Hub', icon: '📦', cost: 2_400_000, capacity: 9000, employees: 4, group: 'production', color: '#5a7f93', roof: '#7ea6bd', blurb: 'Bulk storage. Cuts freight costs for nearby stores.', height: 0.75 },
+  retail_store: { name: 'Retail Store', icon: '🏬', cost: 1_800_000, capacity: 700, employees: 3, group: 'commerce', color: '#2f7f6f', roof: '#41a894', blurb: 'Sells consumer goods. Traffic and price drive volume.', height: 0.85 },
+  cafe: { name: 'Café', icon: '☕', cost: 620_000, capacity: 700, employees: 2, group: 'commerce', color: '#8a5a34', roof: '#b57a49', blurb: 'Morning trade. Small footprint, fast payback.', height: 0.6 },
+  fast_food: { name: 'Fast Food', icon: '🍔', cost: 980_000, capacity: 620, employees: 2, group: 'commerce', color: '#b8473f', roof: '#e06a5c', blurb: 'High volume, thin ticket, lunch-peaked.', height: 0.62 },
+  restaurant: { name: 'Restaurant', icon: '🍽️', cost: 1_650_000, capacity: 340, employees: 4, group: 'commerce', color: '#7a3f63', roof: '#a35b87', blurb: 'Evening covers, high ticket, high food cost.', height: 0.8 },
+  bar: { name: 'Bar', icon: '🍺', cost: 1_150_000, capacity: 380, employees: 3, group: 'commerce', color: '#4a3f80', roof: '#6c5fae', blurb: 'Night trade. Strong margins, licence costs.', height: 0.72 },
+  apartment: { name: 'Apartment Block', icon: '🏢', cost: 1_200_000, capacity: 6, employees: 0, group: 'property', color: '#5d6b8a', roof: '#8494b5', blurb: 'Small residential rental. Upgrades add floors and units.', height: 0.7 },
+  office: { name: 'Office Tower', icon: '🏙️', cost: 2_000_000, capacity: 6, employees: 0, group: 'property', color: '#3f5a75', roof: '#6d8dab', blurb: 'Small commercial space. Upgrades add floors.', height: 0.8 },
+  hq: { name: 'Headquarters', icon: '🏛️', cost: 6_200_000, capacity: 120, employees: 4, group: 'corporate', color: '#8d7b3f', roof: '#c0aa5c', blurb: 'Executives lift group-wide productivity.', height: 1.6 },
+  lab: { name: 'R&D Lab', icon: '🔬', cost: 4_800_000, capacity: 80, employees: 3, group: 'corporate', color: '#2f6f8f', roof: '#4fa2c4', blurb: 'Runs research that raises quality and cuts costs.', height: 1.1 },
   seaport: { name: 'Seaport', icon: '⚓', cost: 800_000_000, capacity: 500_000, employees: 180, group: 'production', color: '#41556b', roof: '#6b8299', blurb: 'State import terminal. Buy inputs without a supply chain.', height: 0.9 },
 };
 

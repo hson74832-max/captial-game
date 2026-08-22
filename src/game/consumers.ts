@@ -187,6 +187,116 @@ export function switchingCostMultiplier(building: Building, competitiveAppeal: n
 }
 
 /** The Capitalism rating model: price / quality / brand blended by weight. */
+/**
+ * Brand equity decays without advertising maintenance. A brand is a memory,
+ * and memories fade: the share of voice a company stops paying for is gradually
+ * forgotten. Decay is INVERSELY proportional to ad spend — heavy spend not only
+ * adds equity, it slows the forgetting, so continuous presence compounds while
+ * bursty campaigns fade fast.
+ */
+export function brandDecayRate(adSpendMonthly: number, category: string): number {
+  // Fast-moving consumer categories forget faster than durable industrial ones.
+  const base = category === 'Apparel' || category === 'Cosmetics' ? 0.055 : 0.03;
+  // Ad support protects the memory, with diminishing returns.
+  const protection = Math.min(0.85, Math.log10(1 + adSpendMonthly / 1000) * 0.32);
+  return Math.max(0.004, base * (1 - protection));
+}
+
+export function updateBrandEquity(
+  building: Building, adSpendMonthly: number, category: string, categoryRevenue: number,
+) {
+  // Earned equity from spend, scaled by how well the site is actually trading.
+  const traction = Math.min(2, categoryRevenue / 40_000 + 0.4);
+  const gain = Math.log10(1 + adSpendMonthly / 800) * 0.055 * traction;
+  const decay = brandDecayRate(adSpendMonthly, category);
+  building.brandEquity = Math.max(0, Math.min(100,
+    building.brandEquity * (1 - decay) + gain));
+  // Loyalty follows equity, not the other way round.
+  building.loyalCustomerBase = Math.max(0.02, Math.min(0.6,
+    building.loyalCustomerBase * (1 - decay * 0.4) + (building.brandEquity / 100) * 0.012));
+}
+
+/**
+ * Bounded rationality: shoppers do not evaluate every option. They form a
+ * CONSIDERATION SET of the top-N brands they are even aware of, then compare
+ * only within it. Being outside the set is worse than being expensive inside
+ * it — an unknown product cannot be chosen regardless of value.
+ */
+export function considerationSet(
+  state: GameState, city: City, product: Product, size = 5,
+): Array<{ building: Building; share: number }> {
+  const carrying = state.buildings.filter(b =>
+    b.cityId === city.id && b.isOperating && b.products.includes(product.id));
+  if (carrying.length === 0) return [];
+
+  // Awareness is driven by advertising presence and tenure, not just quality.
+  const scored = carrying.map(b => ({
+    building: b,
+    awareness: b.brandEquity * 0.7 + b.socialProof * 25 + b.adBudget / 2000,
+  })).sort((a, b) => b.awareness - a.awareness);
+
+  const top = scored.slice(0, size);
+  const totalAwareness = top.reduce((s, x) => s + x.awareness, 0) || 1;
+  return top.map(x => ({ building: x.building, share: x.awareness / totalAwareness }));
+}
+
+/**
+ * Active searchers. A fraction of shoppers visit several stores a month and
+ * compare prices directly; the rest are passive and buy where they always buy.
+ * Active search is what transmits price competition between stores — without
+ * it, a rival's price cut is invisible until customers happen to wander past.
+ */
+export function searchIntensity(city: City, product: Product): number {
+  // Search rises with ticket size: nobody drives across town to save 2%.
+  const ticket = Math.log10(Math.max(1, product.currentPrice)) * 0.09;
+  // Educated, connected populations search more.
+  const sophistication = city.educationIndex / 100 * 0.16;
+  // Staples are bought on habit, durables are researched.
+  const habit = product.demandIndex > 70 ? -0.06 : 0.05;
+  return Math.max(0.05, Math.min(0.55, 0.18 + ticket + sophistication + habit));
+}
+
+/** Competitive effect of active search: how much of your price edge leaks away. */
+export function searchCompetition(
+  state: GameState, city: City, product: Product, building: Building,
+): number {
+  const intensity = searchIntensity(city, product);
+  const rivals = state.buildings.filter(b =>
+    b.cityId === city.id && b.id !== building.id && b.isOperating
+    && b.products.includes(product.id));
+  if (rivals.length === 0) return 1;
+
+  // Cheapest rival in the market — that is what searchers will find.
+  const cheapest = rivals.reduce((min, r) =>
+    r.pricingMultiplier < min.pricingMultiplier ? r : min, rivals[0]);
+  const gap = building.pricingMultiplier - cheapest.pricingMultiplier;
+  if (gap <= 0) return 1 + intensity * 0.15; // being cheapest rewards you
+  // Lose share to the cheaper rival in proportion to search intensity.
+  return Math.max(0.45, 1 - gap * intensity * 1.8);
+}
+
+/**
+ * Metcalfe-style network effects, generalised beyond electronics. Retail
+ * networks, marketplaces and platform businesses all get more valuable as more
+ * people use them — that is what makes scale a moat rather than just cost
+ * spreading. Returns a multiplier on demand.
+ */
+export function networkEffectMultiplier(product: Product, chainScale: number): number {
+  const category = product.category;
+  // How strongly this category exhibits network/scale effects.
+  const strength =
+    category === 'Communication' || category === 'Computers' ? 1.0 :
+    category === 'Electronics' ? 0.7 :
+    category === 'Auto' ? 0.45 :       // dealer & service networks
+    category === 'Apparel' || category === 'Cosmetics' ? 0.35 : // brand community
+    category === 'Home' ? 0.25 :
+    category === 'Grocery' || category === 'Beverage' ? 0.2 :   // store density
+    category === 'Health' ? 0.3 : 0.1;
+  // Metcalfe value grows with the square of users; we use log to keep it tame.
+  const n = Math.max(1, chainScale);
+  return 1 + strength * Math.min(0.4, Math.log10(1 + n) * 0.16);
+}
+
 export function productRating(product: Product, priceMultiplier: number): number {
   const priceScore = Math.max(0, 100 - Math.max(0, priceMultiplier - 0.6) * 90);
   return (

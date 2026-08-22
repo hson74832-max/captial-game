@@ -7,13 +7,15 @@ import { Btn } from './components/ui';
 import type { BuildingType, GameState, Overlay } from './game/types';
 import {
   buyListedBuilding, createGame, manualRestock, placeBuilding, repairBuilding, repayLoan,
-  respondToOffer, sellBuilding, setBuildingField, setProductLine, startResearch, takeLoan,
+  respondToOffer, counterOffer, setBuildingField, setProductLine, startResearch, takeLoan,
   tick as engineTick, tradeShares, upgradeBuilding,
 } from './game/engine';
 import { BUILDING_CONFIGS } from './game/constants';
 import * as sys from './game/systems';
 import * as mk from './game/markets';
 import * as bd from './game/bonds';
+import * as comp from './game/competition';
+import * as lab from './game/labor';
 
 const COLORS = ['#22d3a7', '#38bdf8', '#f472b6', '#fbbf24', '#a78bfa', '#f87171'];
 
@@ -85,7 +87,7 @@ export default function App() {
       case 'line': setProductLine(s, args[0] as string, args[1] as string); break;
       case 'upgrade': upgradeBuilding(s, args[0] as string); break;
       case 'repair': repairBuilding(s, args[0] as string); break;
-      case 'sell': sellBuilding(s, args[0] as string); break;
+      case 'counterOffer': counterOffer(s, args[0] as string, args[1] as number); break;
       case 'buy': buyListedBuilding(s, args[0] as string); break;
       case 'restock': manualRestock(s, args[0] as string); break;
       case 'loan': takeLoan(s, args[0] as number, args[1] as number); break;
@@ -122,6 +124,25 @@ export default function App() {
       case 'issueShares': sys.issueShares(s, args[0] as number); break;
       case 'espionage': sys.runEspionage(s, args[0] as string); break;
       case 'marketResearch': sys.buyMarketResearch(s, args[0] as string); break;
+      case 'compMode': comp.setCompetitionMode(s, args[0] as string, args[1] as 'cournot' | 'bertrand'); break;
+      case 'automate': lab.automateBuilding(s, args[0] as string); break;
+      case 'buyback': {
+        const p = s.companies.find(c => c.id === s.playerCompanyId);
+        const n = Math.min(args[0] as number, Math.max(0, (p?.sharesOutstanding ?? 0) - (p?.founderShares ?? 0)));
+        if (p && n > 0) {
+          const cost = n * p.sharePrice;
+          if (p.cash >= cost) {
+            p.cash -= cost;
+            p.treasuryShares += n;
+            p.sharesOutstanding = Math.max(1, p.sharesOutstanding - n);
+            p.sharePrice *= 1 + (n / Math.max(1, p.sharesOutstanding)) * 0.4;
+            p.marketCap = p.sharePrice * p.sharesOutstanding;
+            if (p.buybackYear !== s.year) { p.buybackYear = s.year; p.sharesBoughtBackThisYear = 0; }
+            p.sharesBoughtBackThisYear += n;
+          }
+        }
+        break;
+      }
     }
     force(v => v + 1);
   }, []);

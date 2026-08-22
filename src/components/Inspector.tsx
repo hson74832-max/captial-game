@@ -4,7 +4,7 @@ import {
   BUILDING_CONFIGS, LIVESTOCK_BREEDS, PRODUCT_TIERS, isHospitality, isProducer, isProperty,
 } from '../game/constants';
 import { farmModifiers, getQuotes, neededProducts } from '../game/systems';
-import { categorySpendPool, incomeFit, productRating } from '../game/consumers';
+import { categorySpendPool, incomeFit, productRating, searchIntensity } from '../game/consumers';
 import { eligibleFor, fmtMoney, fmtNum, fmtShort } from '../game/engine';
 import { Bar, Btn, Panel, Row, Slider, Spark, Tabs, cx } from './ui';
 
@@ -151,23 +151,22 @@ function BuildingInspector({ s, b, onAction }: { s: GameState; b: Building; onAc
               </p>
               <div className="mt-2 grid grid-cols-2 gap-x-3">
                 <Row k="Tenants" v={`${b.tenants} / ${b.capacity}`} />
-                <Row k="Occupancy" v={`${(b.occupancy * 100).toFixed(0)}%`}
-                  tone={b.occupancy > 0.9 ? 'good' : b.occupancy > 0.6 ? undefined : 'bad'} />
+                <Row k="Occupancy" v={`${b.occupancy.toFixed(0)}%`}
+                  tone={b.occupancy > 90 ? 'good' : b.occupancy > 60 ? undefined : 'bad'} />
                 <Row k="Rent / unit · mo" v={fmtMoney(b.rentPerUnit)} tone="good" />
                 <Row k="Annual NOI" v={fmtMoney(b.dailyProfit * 365)} />
               </div>
-              <div className="mt-2"><Bar label="Occupancy" value={b.occupancy * 100} tone="emerald" /></div>
+              <div className="mt-2"><Bar label="Occupancy" value={b.occupancy} tone="emerald" /></div>
             </Panel>}
 
-            {!isPropertyAsset && <Panel title="Product Lines">
+            {!isPropertyAsset && !isHospitality(b.type) && <Panel title="Product Lines">
               <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
                 {eligibleFor(s, b).map(p => {
                   const on = b.products.includes(p.id);
                   const stock = b.inventory[p.id] ?? 0;
                   return (
                     <button key={p.id} onClick={() => onAction('line', b.id, p.id)}
-                      disabled={isHospitality(b.type)}
-                      className={cx('w-full rounded border px-2 py-1 text-left disabled:opacity-70',
+                      className={cx('w-full rounded border px-2 py-1 text-left',
                         on ? 'border-emerald-500/60 bg-emerald-500/10' : 'border-slate-800 bg-slate-900/60 hover:border-slate-600')}>
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] text-slate-200">{p.icon} {p.name}</span>
@@ -182,6 +181,39 @@ function BuildingInspector({ s, b, onAction }: { s: GameState; b: Building; onAc
                 })}
                 {eligibleFor(s, b).length === 0 && <p className="text-[11px] text-slate-500">This asset does not trade goods.</p>}
               </div>
+            </Panel>}
+
+            {isHospitality(b.type) && b.menu.length > 0 && <Panel title="Menu Board">
+              <div className="space-y-1">
+                {b.menu.map(item => {
+                  const margin = item.price > 0 ? ((item.price - item.foodCost) / item.price * 100) : 0;
+                  return (
+                    <div key={item.id} className={cx('rounded border px-2 py-1.5',
+                      item.enabled ? 'border-slate-700 bg-slate-900/50' : 'border-slate-800/50 bg-slate-950/50 opacity-50')}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-slate-200">
+                          {item.category === 'kids' ? '🧒 ' : item.category === 'combo' ? '📦 ' : ''}
+                          {item.name}
+                          {item.includesToy && <span className="ml-1 text-[9px] text-amber-400">+toy</span>}
+                        </span>
+                        <span className="font-mono text-[11px] text-emerald-300">${item.price.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-[9px] text-slate-500">
+                        <span>
+                          food cost ${item.foodCost.toFixed(2)} · margin {margin.toFixed(0)}%
+                          · popularity {(item.popularity * 100).toFixed(0)}%
+                        </span>
+                        <span className="capitalize">{item.category}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+                Revenue = covers × weighted-average ticket. Combos carry the margin, fountain drinks
+                carry the gross profit, kids boxes buy family footfall. Ingredient availability gates
+                how many covers the kitchen can actually serve.
+              </p>
             </Panel>}
 
             {isProducer(b.type) && (
@@ -220,6 +252,25 @@ function BuildingInspector({ s, b, onAction }: { s: GameState; b: Building; onAc
                     Transfer pricing shifts profit between your own sites — useful for showing margin where you want it.
                   </p>
                 </div>
+              </Panel>
+            )}
+
+            {isProducer(b.type) && (
+              <Panel title="Automation">
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Row k="Automation level" v={`${b.automationLevel} / 5`} />
+                  <Row k="Headcount modifier" v={`${(Math.pow(0.86, b.automationLevel) * 100).toFixed(0)}%`} />
+                  <Row k="Throughput" v={`+${(b.automationLevel * 11)}%`} tone="good" />
+                  <Row k="Upkeep drag" v={`${(b.automationLevel * 3.5).toFixed(1)}% of value/yr`} tone="bad" />
+                </div>
+                <Btn className="mt-2 w-full" disabled={b.automationLevel >= 5}
+                  onClick={() => onAction('automate', b.id)}>
+                  Install automation · {fmtMoney(b.constructionCost * 0.16 * (b.automationLevel + 1))}
+                </Btn>
+                <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+                  Substituting capital for labour: +9% throughput and −14% headcount per level, with
+                  higher ongoing upkeep and a morale cost. Immediately effective — unlike training.
+                </p>
               </Panel>
             )}
 
@@ -343,17 +394,26 @@ function BuildingInspector({ s, b, onAction }: { s: GameState; b: Building; onAc
               {([
                 ['Staff wages', b.costs.wages], ['Payroll tax & benefits', b.costs.payrollTax],
                 ['Utilities', b.costs.utilities], ['Marketing', b.costs.marketing],
-                ['Maintenance', b.costs.maintenance], ['Insurance', b.costs.insurance],
+                ['Insurance', b.costs.insurance],
                 ['Property tax', b.costs.propertyTax], ['Freight', b.costs.freight],
                 ['Licences & other', b.costs.other],
               ] as Array<[string, number]>).map(([k, v]) => (
                 <Row key={k} k={k} v={fmtMoney(v * 720)} />
               ))}
+              <Row k="Maintenance" v={fmtMoney(b.costs.maintenance * 720)}
+                why="A small, unavoidable routine cost (cleaning, servicing, minor fixes) — always charged while the asset operates. 30% of it is also set aside into a maintenance reserve fund, capped at 20% of construction cost, which discounts your next Refurbish bill. It does NOT stop the slow wear that Refurbish fixes." />
               <div className="mt-1 border-t border-slate-700/60 pt-1">
                 <Row k="Total operating cost" v={fmtMoney(b.operatingCost * 720)} tone="bad" />
                 <Row k="Cost of goods" v={fmtMoney(b.cogs * 720)} tone="bad" />
                 <Row k="Revenue" v={fmtMoney(b.revenue * 720)} tone="good" />
                 <Row k="Net" v={fmtMoney(b.profit * 720)} tone={b.profit >= 0 ? 'good' : 'bad'} />
+              </div>
+              <div className="mt-2 border-t border-slate-700/60 pt-1">
+                <Row k="Maintenance reserve" v={fmtMoney(b.maintenanceReserve)} tone="good"
+                  why="Accumulated from 30% of every maintenance payment. Drawn down automatically the next time you Refurbish, so it reduces the cash you need to pay out of pocket." />
+                <Row k="Condition" v={`${b.condition.toFixed(0)}%`}
+                  tone={b.condition > 60 ? 'good' : 'bad'}
+                  why="Wears down slowly from use regardless of maintenance spend. Refurbish is the only way to restore it to 100%; the reserve above discounts that bill." />
               </div>
             </Panel>
             <Panel title="Capital Actions">
@@ -364,12 +424,14 @@ function BuildingInspector({ s, b, onAction }: { s: GameState; b: Building; onAc
                 </Btn>
                 <Btn className="w-full" disabled={b.condition > 97}
                   onClick={() => onAction('repair', b.id)}>
-                  Refurbish · {fmtMoney((100 - b.condition) / 100 * b.constructionCost * 0.25)}
-                </Btn>
-                <Btn className="w-full" variant="danger" onClick={() => onAction('sell', b.id)}>
-                  Sell asset · {fmtMoney(b.fairValue * 0.94)}
+                  Refurbish · {fmtMoney(Math.max(0, (100 - b.condition) / 100 * b.constructionCost * 0.55 - b.maintenanceReserve))}
                 </Btn>
               </div>
+              <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
+                There is no instant sale. To dispose of this asset, list it for sale from the Ops tab and
+                wait for a buyer, or respond to an inbound offer from the Offers screen — accept, decline,
+                or send back a counter.
+              </p>
             </Panel>
           </>
         )}
@@ -444,10 +506,19 @@ function ConsumerDesk({ s, b }: { s: GameState; b: Building }) {
           );
         })}
         <div className="mt-1 grid grid-cols-2 gap-x-3">
-          <Row k="Anchor price" v={b.anchorPrice > 0 ? fmtMoney(b.anchorPrice) : 'unset'} />
-          <Row k="Loyal base" v={`${(b.loyalCustomerBase * 100).toFixed(1)}%`} tone="good" />
-          <Row k="Social proof" v={`${(b.socialProof * 100).toFixed(0)}%`} tone={b.socialProof > 0.4 ? 'good' : undefined} />
-          <Row k="Brand equity" v={`${b.brandEquity.toFixed(0)}/100`} />
+          <Row k="Anchor price" v={b.anchorPrice > 0 ? fmtMoney(b.anchorPrice) : 'unset'}
+            why={`The price shoppers first saw here (${b.anchorPrice > 0 ? fmtMoney(b.anchorPrice) : 'none yet'}) drifts ${'<'}0.1% per hour toward your current shelf price. Charging above it costs ~2.25x more demand than discounting below it gains.`} />
+          <Row k="Loyal base" v={`${(b.loyalCustomerBase * 100).toFixed(1)}%`}
+            why={`${(b.loyalCustomerBase * 100).toFixed(1)}% of your trade is habitual and migrates slowly. It decays with brand equity (ad spend ${fmtMoney(b.adBudget)}/mo) and grows with every completed sale. Rivals must beat you consistently to move these customers.`} tone="good" />
+          <Row k="Social proof" v={`${(b.socialProof * 100).toFixed(0)}%`}
+            why={`Bestseller momentum. Sells above ~0.6x of expected volume build it, below that erode it. Adds up to +55% demand at full strength. Builds slowly (1.5%/tick) and is lost faster than won.`}
+            tone={b.socialProof > 0.4 ? 'good' : undefined} />
+          <Row k="Brand equity" v={`${b.brandEquity.toFixed(0)}/100`}
+            why={`Decays every month at a rate inversely proportional to your ad spend (${fmtMoney(b.adBudget)}/mo) — heavy spend both adds equity and slows the forgetting. Bursty campaigns fade fast; continuous presence compounds.`} />
+          <Row k="Active search" v={`${(searchIntensity(city, lines[0] ?? lines[0]) * 100).toFixed(0)}% compare`}
+            why={`This share of shoppers visits several stores and compares prices directly, so your price edge leaks to the cheapest rival in ${city.name}. Higher for expensive, researched goods and educated populations; staples are bought on habit.`} />
+          <Row k="Chain scale" v={`${(s.buildings.filter(x => x.companyId === b.companyId).length)} sites`}
+            why={`Network effects: your whole group's scale feeds demand here, capped at +40%. Strongest in Communication, Computers and Electronics; weak for staples.`} />
         </div>
         <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
           Raising price above the anchor stings ~2.25× harder than an equal cut helps. Luxury lines keep a

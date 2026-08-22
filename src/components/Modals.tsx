@@ -1,8 +1,11 @@
 import { useState } from 'react';
 import type { GameState } from '../game/types';
 import { RESEARCH_MENU } from '../game/constants';
-import { fmtMoney, fmtNum, fmtShort } from '../game/engine';
-import { Bar, Btn, Panel, Row, Spark, cx } from './ui';
+import { companyFinancials, fmtMoney, fmtNum, fmtShort } from '../game/engine';
+import { topSpreads, arbitrageBand } from '../game/regional';
+import { competitionMode, industryHHI, entryThreat } from '../game/competition';
+import { structuralUnemployment } from '../game/labor';
+import { Bar, Btn, Panel, Row, Spark, Tip, cx } from './ui';
 
 interface Props {
   s: GameState;
@@ -32,6 +35,9 @@ export default function Modals({ s, modal, close, onAction }: Props) {
           {modal === 'finance' && <FinanceView s={s} onAction={onAction} />}
           {modal === 'rivals' && <RivalsView s={s} onAction={onAction} />}
           {modal === 'rd' && <ResearchView s={s} onAction={onAction} />}
+          {modal === 'companies' && <CompaniesView s={s} onAction={onAction} />}
+          {modal === 'regional' && <RegionalView s={s} />}
+          {modal === 'policy' && <PolicyView s={s} onAction={onAction} />}
           {modal === 'treasury' && <TreasuryView s={s} onAction={onAction} />}
           {modal === 'offers' && <OffersView s={s} onAction={onAction} />}
           {modal === 'help' && <HelpView />}
@@ -405,6 +411,467 @@ function FinanceView({ s, onAction }: { s: GameState; onAction: Props['onAction'
   );
 }
 
+// ════════════════ COMPANIES: charts, income statement, balance sheet ════════════════
+function CompaniesView({ s, onAction }: { s: GameState; onAction: Props['onAction'] }) {
+  const [sel, setSel] = useState<string>(s.playerCompanyId);
+  const co = s.companies.find(c => c.id === sel);
+  const f = co ? companyFinancials(s, co.id) : null;
+  const ranked = [...s.companies].sort((a, b) => b.marketCap - a.marketCap);
+
+  if (!co || !f) return null;
+
+  const issuanceRoom = Math.max(0, f.authorizedShares - f.sharesOutstanding);
+  const owned = s.buildings.filter(b => b.companyId === co.id).length;
+  const isPlayer = co.id === s.playerCompanyId;
+
+  return (
+    <div className="space-y-2">
+      {/* ── Company selector strip with live charts ── */}
+      <div className="grid grid-cols-4 gap-2">
+        {ranked.map(c => {
+          const active = c.id === sel;
+          const cf = companyFinancials(s, c.id);
+          return (
+            <button key={c.id} onClick={() => setSel(c.id)}
+              className={cx('rounded-lg border p-2 text-left transition-colors',
+                active ? 'border-emerald-500 bg-emerald-500/10'
+                  : 'border-slate-800 bg-slate-900/50 hover:border-slate-600')}>
+              <div className="flex items-center gap-1.5">
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: c.color }} />
+                <span className="truncate text-[11px] font-semibold text-slate-100">{c.name}</span>
+                {c.isPlayer && <span className="text-[8px] text-emerald-400">YOU</span>}
+              </div>
+              <Spark data={c.sharePriceHistory} color={c.color} height={26} />
+              <div className="mt-0.5 flex justify-between text-[9px]">
+                <span className="font-mono text-slate-300">${c.sharePrice.toFixed(2)}</span>
+                <span className={cx('font-mono', cf.netIncome >= 0 ? 'text-emerald-400' : 'text-rose-400')}>
+                  {cf.netIncome >= 0 ? '+' : ''}{fmtMoney(cf.netIncome)}/mo
+                </span>
+              </div>
+              <div className="flex justify-between text-[9px] text-slate-600">
+                <span>{fmtMoney(cf.totalAssets)} assets</span>
+                <span>{fmtNum(cf.sharesOutstanding)} sh</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Performance charts ── */}
+      <Panel title={`${co.name} — performance`}>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <div className="mb-0.5 text-[9px] uppercase tracking-widest text-slate-600">Share price</div>
+            <Spark data={co.sharePriceHistory} color={co.color} height={46} />
+          </div>
+          <div>
+            <div className="mb-0.5 text-[9px] uppercase tracking-widest text-slate-600">Profit history</div>
+            <Spark data={co.profitHistory} color="#34d399" height={46} />
+          </div>
+          <div>
+            <div className="mb-0.5 text-[9px] uppercase tracking-widest text-slate-600">Market cap</div>
+            <div className="font-mono text-lg text-slate-100">{fmtMoney(co.marketCap)}</div>
+            <div className="grid grid-cols-2 gap-x-2">
+              <Row k="Rating" v={co.bondRating} tone={String(co.bondRating).startsWith('A') ? 'good' : undefined} />
+              <Row k="Assets" v={String(owned)} />
+              <Row k="Skill" v={co.skill} />
+              <Row k="Strategy" v={co.strategy} />
+            </div>
+          </div>
+        </div>
+      </Panel>
+
+      {/* ── Income statement & balance sheet ── */}
+      <div className="grid grid-cols-2 gap-2">
+        <Panel title="Income Statement · monthly">
+          <Row k="Revenue" v={fmtMoney(f.revenue)} />
+          <Row k="Cost of goods sold" v={`−${fmtMoney(f.cogs)}`} />
+          <Row k="Gross profit" v={fmtMoney(f.grossProfit)}
+            tone={f.grossProfit > 0 ? 'good' : 'bad'} />
+          <Row k="Operating expense" v={`−${fmtMoney(f.opex)}`} />
+          <Row k="EBITDA" v={fmtMoney(f.ebitda)} tone={f.ebitda > 0 ? 'good' : 'bad'} />
+          <Row k="Depreciation" v={`−${fmtMoney(f.depreciation)}`} />
+          <Row k="EBIT" v={fmtMoney(f.ebit)} tone={f.ebit > 0 ? 'good' : 'bad'} />
+          <Row k="Interest expense" v={`−${fmtMoney(f.interest)}`} />
+          <Row k="Pre-tax profit" v={fmtMoney(f.pretax)} tone={f.pretax > 0 ? 'good' : 'bad'} />
+          <Row k={`Tax @ ${s.economy.corporateTaxRate.toFixed(0)}%`} v={`−${fmtMoney(f.tax)}`} />
+          <div className="mt-1 border-t border-slate-700 pt-1">
+            <Row k="NET INCOME" v={fmtMoney(f.netIncome)} tone={f.netIncome > 0 ? 'good' : 'bad'} />
+            <Row k="Earnings per share" v={`$${f.eps.toFixed(3)}`} />
+            <Row k="Gross margin" v={`${f.grossMargin.toFixed(1)}%`} />
+            <Row k="Net margin" v={`${f.netMargin.toFixed(1)}%`} />
+          </div>
+        </Panel>
+
+        <Panel title="Balance Sheet">
+          <div className="mb-1 text-[9px] uppercase tracking-widest text-slate-600">Assets</div>
+          <Row k="Cash & equivalents" v={fmtMoney(f.cash)} />
+          <Row k="Inventory" v={fmtMoney(f.inventoryValue)} />
+          <Row k="Property & equipment" v={fmtMoney(f.propertyValue)} />
+          <Row k="Land holdings" v={fmtMoney(f.landValue)} />
+          <Row k="Securities & stakes" v={fmtMoney(f.securities)} />
+          <Row k="TOTAL ASSETS" v={fmtMoney(f.totalAssets)} tone="good" />
+          <div className="mb-1 mt-2 text-[9px] uppercase tracking-widest text-slate-600">Liabilities</div>
+          <Row k="Debt" v={fmtMoney(f.debt)} tone={f.debt > 0 ? 'bad' : undefined} />
+          <Row k="Trade payables" v={fmtMoney(f.payables)} />
+          <Row k="TOTAL LIABILITIES" v={fmtMoney(f.totalLiabilities)} tone="bad" />
+          <div className="mt-2 border-t border-slate-700 pt-1">
+            <Row k="SHAREHOLDERS' EQUITY" v={fmtMoney(f.equity)}
+              tone={f.equity > 0 ? 'good' : 'bad'} />
+            <Row k="Book value / share" v={`$${f.bookValuePerShare.toFixed(2)}`} />
+          </div>
+        </Panel>
+      </div>
+
+      {/* ── Share structure & ratios ── */}
+      <div className="grid grid-cols-2 gap-2">
+        <Panel title="Share Structure">
+          <Row k="Shares outstanding" v={fmtNum(f.sharesOutstanding)} />
+          <Row k="Authorized (maximum)" v={fmtNum(f.authorizedShares)} />
+          <Row k="Unissued headroom" v={fmtNum(issuanceRoom)} tone={issuanceRoom > 0 ? 'good' : 'bad'} />
+          <Row k="Founder / insider" v={`${fmtNum(f.founderShares)} (${((f.founderShares / f.sharesOutstanding) * 100).toFixed(0)}%)`} />
+          <Row k="Treasury (bought back)" v={fmtNum(f.treasuryShares)} />
+          <Row k="Public float" v={fmtNum(f.publicFloat)} />
+          <div className="mt-1.5">
+            <Bar label="Issued vs authorized"
+              value={(f.sharesOutstanding / Math.max(1, f.authorizedShares)) * 100}
+              tone={(f.sharesOutstanding / Math.max(1, f.authorizedShares)) > 0.8 ? 'amber' : 'emerald'} />
+          </div>
+          <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+            Issuing new shares raises cash but dilutes every holder, including the founder stake.
+            Buybacks retire stock and lift earnings per share.
+          </p>
+          {isPlayer && (
+            <div className="mt-1.5 flex gap-1">
+              <Btn className="flex-1"
+                onClick={() => onAction('issueShares', Math.floor(f.sharesOutstanding * 0.05))}>
+                Issue 5%
+              </Btn>
+              <Btn className="flex-1" variant="ghost"
+                onClick={() => onAction('buyback', Math.floor(f.sharesOutstanding * 0.03))}>
+                Buy back 3%
+              </Btn>
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Key Ratios">
+          <Row k="Return on equity" v={`${f.roe.toFixed(1)}%`} tone={f.roe > 0 ? 'good' : 'bad'} />
+          <Row k="Return on assets" v={`${f.roa.toFixed(1)}%`} tone={f.roa > 0 ? 'good' : 'bad'} />
+          <Row k="Leverage (debt/assets)" v={`${f.leverage.toFixed(1)}%`}
+            tone={f.leverage > 60 ? 'bad' : 'good'} />
+          <Row k="Current ratio" v={f.currentRatio > 50 ? '∞' : f.currentRatio.toFixed(2)}
+            tone={f.currentRatio >= 1 ? 'good' : 'bad'} />
+          <Row k="Price / book" v={f.equity > 0 ? (co.marketCap / f.equity).toFixed(2) : '—'} />
+          <Row k="Interest cover" v={f.interest > 0 ? (f.ebit / f.interest).toFixed(1) + '×' : 'no debt'}
+            tone={f.interest > 0 && f.ebit / f.interest < 2.5 ? 'bad' : 'good'} />
+          <div className="mt-1.5 space-y-1">
+            <Bar label="Leverage" value={f.leverage} tone={f.leverage > 60 ? 'rose' : 'emerald'} />
+            <Bar label="Issued capital" value={(f.sharesOutstanding / Math.max(1, f.authorizedShares)) * 100}
+              tone="sky" />
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════ REGIONAL MARKETS: persistent arbitrage ════════════════
+function RegionalView({ s }: { s: GameState }) {
+  const [pid, setPid] = useState(s.products[0]?.id ?? '');
+  const product = s.products.find(p => p.id === pid) ?? s.products[0];
+  const spreads = topSpreads(s, 10);
+
+  const rows = s.cities.map(c => {
+    const q = s.regional[c.id]?.[product.id];
+    const price = Math.max(product.productionCost * 0.15, product.currentPrice * (q?.priceMul ?? 1));
+    return {
+      city: c, q, price,
+      mul: q?.priceMul ?? 1,
+      stock: q?.stock ?? 0,
+      pressure: q?.pressure ?? 0,
+    };
+  }).sort((a, b) => a.mul - b.mul);
+
+  const national = product.currentPrice;
+  const cheapest = rows[0];
+  const dearest = rows[rows.length - 1];
+
+  return (
+    <div className="space-y-2">
+      <Panel title="How regional pricing works">
+        <p className="text-[11px] leading-relaxed text-slate-400">
+          Every city holds its own buffer for every product. Goods only move between cities when the
+          price spread exceeds the cost of freight — a narrower spread than that is not worth shipping,
+          so the differential <em className="text-emerald-400">persists</em>. Cheap diesel and good
+          infrastructure narrow the no-arbitrage band and pull cities together; expensive fuel or poor
+          roads widen it and let gaps survive for months. Holding stock also costs money, which stops
+          everyone simply over-buying into every surplus.
+        </p>
+      </Panel>
+
+      <Panel title="Live opportunities — widest spreads">
+        <div className="grid grid-cols-2 gap-1.5">
+          {spreads.map(sp => (
+            <button key={sp.productId} onClick={() => setPid(sp.productId)}
+              className={cx('rounded border px-2 py-1.5 text-left',
+                sp.productId === pid ? 'border-emerald-500 bg-emerald-500/10'
+                  : 'border-slate-800 bg-slate-900/50 hover:border-slate-600')}>
+              <div className="flex justify-between">
+                <span className="truncate text-[11px] text-slate-200">{sp.productName}</span>
+                <span className={cx('font-mono text-[10px]', sp.tradable ? 'text-emerald-400' : 'text-amber-400')}>
+                  +{((sp.richMul - sp.cheapMul) * 100).toFixed(0)}%
+                </span>
+              </div>
+              <div className="text-[9px] text-slate-500">
+                Buy {sp.cheapCity} → sell {sp.richCity}
+              </div>
+              <div className="text-[9px] text-slate-600">
+                {sp.tradable
+                  ? `spread beats the ${(sp.band * 100).toFixed(0)}% freight band — worth moving`
+                  : `spread below the ${(sp.band * 100).toFixed(0)}% freight band — not worth shipping`}
+              </div>
+            </button>
+          ))}
+          {spreads.length === 0 && (
+            <p className="col-span-2 text-[11px] text-slate-500">
+              No regional differentials yet — markets have not traded enough to separate.
+            </p>
+          )}
+        </div>
+      </Panel>
+
+      <div className="grid grid-cols-3 gap-2">
+        <Panel title="Product">
+          <select value={pid} onChange={e => setPid(e.target.value)}
+            className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-200">
+            {s.products.map(p => <option key={p.id} value={p.id}>{p.icon} {p.name}</option>)}
+          </select>
+          <div className="mt-2">
+            <Row k="National price" v={fmtMoney(national)} />
+            <Row k="Cheapest city" v={`${cheapest.city.name} @ ${fmtMoney(cheapest.price)}`} tone="good" />
+            <Row k="Dearest city" v={`${dearest.city.name} @ ${fmtMoney(dearest.price)}`} tone="bad" />
+            <Row k="Working spread"
+              v={`${(((dearest.mul - cheapest.mul) / cheapest.mul) * 100).toFixed(1)}%`} />
+            <Row k="Freight band"
+              v={`${(arbitrageBand(s, cheapest.city.id, dearest.city.id) * 100).toFixed(0)}%`} />
+          </div>
+          <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+            Profit the gap by producing or buying in the cheap city and selling into the dear one —
+            but your own volume moves the local price against you.
+          </p>
+        </Panel>
+
+        <div className="col-span-2">
+          <Panel title={`${product.name} by city`}>
+            <table className="w-full text-[10px]">
+              <thead>
+                <tr className="text-left text-slate-600">
+                  <th className="pb-1 font-medium">City</th>
+                  <th className="pb-1 font-medium">Local price</th>
+                  <th className="pb-1 font-medium">vs national</th>
+                  <th className="pb-1 font-medium">Buffered stock</th>
+                  <th className="pb-1 font-medium">Pressure</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.city.id} className="border-t border-slate-800/60">
+                    <td className="py-1 text-slate-300">{r.city.name}</td>
+                    <td className="py-1 font-mono text-slate-200">{fmtMoney(r.price)}</td>
+                    <td className={cx('py-1 font-mono',
+                      r.mul < 0.97 ? 'text-emerald-400' : r.mul > 1.03 ? 'text-rose-400' : 'text-slate-500')}>
+                      {r.mul < 1 ? '−' : '+'}{Math.abs((r.mul - 1) * 100).toFixed(1)}%
+                    </td>
+                    <td className="py-1 font-mono text-slate-400">{fmtNum(Math.round(r.stock))}</td>
+                    <td className="py-1">
+                      <span className={cx('text-[9px]',
+                        r.pressure > 0.05 ? 'text-rose-400' : r.pressure < -0.05 ? 'text-emerald-400' : 'text-slate-600')}>
+                        {r.pressure > 0.05 ? 'glut' : r.pressure < -0.05 ? 'shortage' : 'balanced'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════ POLICY: competition modes, QE, ETS, cycles ════════════════
+function PolicyView({ s, onAction }: { s: GameState; onAction: Props['onAction'] }) {
+  const eco = s.economy;
+  const categories = [...new Set(s.products.map(p => p.category))];
+  const structural = structuralUnemployment(s);
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-3 gap-2">
+        <Panel title="Monetary Policy & Aggregates">
+          <Row k="Policy rate" v={`${eco.interestRate.toFixed(2)}%`}
+            tone={eco.interestRate <= 0.75 ? 'bad' : undefined} />
+          <Row k="QE programme" v={eco.qeActive ? 'ACTIVE' : 'inactive'}
+            tone={eco.qeActive ? 'good' : 'muted'} />
+          {eco.qeActive && <>
+            <Row k="Monthly pace" v={`${(eco.qeMonthlyPace * 100).toFixed(2)}% of GDP`} />
+            <Row k="Purchases to date" v={fmtMoney(eco.qePurchasesToDate)} />
+          </>}
+          <Row k="Central bank assets" v={fmtMoney(eco.centralBankAssets)} />
+          <Row k="Base money" v={eco.baseMoney.toFixed(0)} />
+          <Row k="M1 (narrow)" v={eco.m1.toFixed(0)} />
+          <Row k={
+            <Tip label="M2 (broad money)"
+              why="Base money times the money multiplier. Rises with QE and with bank lending. High M2 growth with flat output is future inflation.">
+              M2 (broad)
+            </Tip>
+          } v={eco.m2.toFixed(0)} />
+          <Row k="3m / 2y / 10y"
+            v={`${eco.threeMonthYield.toFixed(1)} / ${eco.twoYearYield.toFixed(1)} / ${eco.tenYearYield.toFixed(1)}`}
+            tone={eco.twoYearYield > eco.tenYearYield ? 'bad' : undefined} />
+          <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+            {eco.qeActive
+              ? 'The bank is buying bonds because the policy rate has hit its floor. This compresses term premia and lifts asset prices.'
+              : eco.interestRate <= 0.75
+                ? 'The policy rate is at the effective lower bound. Further deterioration would force asset purchases.'
+                : 'Conventional rate policy is doing the work. QE only becomes necessary once rates cannot fall further.'}
+          </p>
+        </Panel>
+
+        <Panel title="Business Cycles & Supply">
+          <Row k={
+            <Tip label="Total factor productivity"
+              why="Output per combined unit of capital and labour. A positive TFP shock raises growth AND eases inflation at once — something a demand boom cannot do.">
+              TFP level
+            </Tip>
+          } v={eco.tfpLevel.toFixed(1)} tone={eco.tfpLevel > 100 ? 'good' : 'bad'} />
+          <Row k="TFP growth" v={`${eco.tfpGrowth.toFixed(2)}%/yr`} tone={eco.tfpGrowth > 0 ? 'good' : 'bad'} />
+          <Row k={
+            <Tip label="Kitchin inventory cycle"
+              why="Firms over-order in good times, get caught with stock when demand turns, then destock hard. Phase +1 = restocking (adds to output), −1 = destocking (deepens the downturn).">
+              Inventory cycle
+            </Tip>
+          } v={eco.inventoryCycle.toFixed(2)}
+            tone={eco.inventoryCycle > 0.1 ? 'good' : eco.inventoryCycle < -0.1 ? 'bad' : undefined} />
+          <Row k="GDP growth" v={`${eco.gdpGrowth.toFixed(2)}%`} tone={eco.gdpGrowth > 0 ? 'good' : 'bad'} />
+          <Row k="Terms of trade" v={eco.termsOfTrade.toFixed(1)}
+            tone={eco.termsOfTrade > 100 ? 'good' : 'bad'} />
+          <Row k={
+            <Tip label="Commodity supercycle"
+              why="A decade-long swing in extractive prices. High prices induce investment, investment creates gluts, gluts crush prices until capacity is retired.">
+              Supercycle phase
+            </Tip>
+          } v={eco.commoditySuperCycle.toFixed(2)}
+            tone={eco.commoditySuperCycle > 0 ? 'good' : 'bad'} />
+          <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+            Supply shocks and demand shocks look different: TFP raises output while easing prices,
+            whereas a demand boom raises both.
+          </p>
+        </Panel>
+
+        <Panel title="Emissions Trading Scheme">
+          <Row k="Allowance price" v={`$${eco.etsAllowancePrice.toFixed(0)}/t`} />
+          <Row k="Annual cap" v={fmtNum(Math.round(eco.etsCap)) + ' t'} />
+          <Row k="Emissions this period" v={fmtNum(Math.round(s.ets.surrendered))} />
+          <Row k="Cap utilisation"
+            v={`${((s.ets.surrendered / Math.max(1, s.ets.cap)) * 100).toFixed(0)}%`}
+            tone={s.ets.surrendered > s.ets.cap ? 'bad' : 'good'} />
+          <Row k="Auction revenue" v={fmtMoney(s.ets.revenue)} />
+          <div className="mt-1.5">
+            <Bar label="Cap utilisation"
+              value={Math.min(100, (s.ets.surrendered / Math.max(1, s.ets.cap)) * 100)}
+              tone={s.ets.surrendered > s.ets.cap ? 'rose' : 'emerald'} />
+          </div>
+          <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+            Unlike a carbon tax (which fixes price and lets emissions float), the ETS fixes quantity and
+            lets the price move — the environmental outcome is guaranteed, the cost is not. The cap
+            ratchets down every year and revenue funds infrastructure.
+          </p>
+        </Panel>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <Panel title="Competition Doctrine by Industry">
+          <p className="mb-2 text-[11px] leading-relaxed text-slate-400">
+            Industries compete on price or on volume, and it changes how rivals respond. Under Bertrand
+            firms undercut and margins collapse; under Cournot they set output, so discipline holds
+            price and concentrated industries earn more.
+          </p>
+          <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+            {categories.map(cat => {
+              const mode = competitionMode(s, cat);
+              const hhi = industryHHI(s, cat);
+              const threat = entryThreat(s, cat);
+              return (
+                <div key={cat} className="rounded border border-slate-800 bg-slate-900/50 px-2 py-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-slate-200">{cat}</span>
+                    <div className="flex gap-1">
+                      <Btn variant={mode === 'cournot' ? 'primary' : 'default'}
+                        onClick={() => onAction('compMode', cat, 'cournot')}>Volume</Btn>
+                      <Btn variant={mode === 'bertrand' ? 'primary' : 'default'}
+                        onClick={() => onAction('compMode', cat, 'bertrand')}>Price</Btn>
+                    </div>
+                  </div>
+                  <div className="mt-0.5 grid grid-cols-3 gap-x-2 text-[9px] text-slate-500">
+                    <span>HHI <b className="text-slate-300">{hhi.toFixed(0)}</b></span>
+                    <span>{hhi > 2500 ? 'concentrated' : hhi > 1500 ? 'moderate' : 'fragmented'}</span>
+                    <span>
+                      <Tip label="Entry threat"
+                        why="A contestable market disciplines incumbents even at high concentration — if entry is cheap, a monopolist still prices defensively.">
+                        entry {(threat * 100).toFixed(0)}%
+                      </Tip>
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
+
+        <Panel title="Labour & Externalities">
+          <div className="grid grid-cols-2 gap-x-3">
+            <Row k="Structural unemployment" v={`${structural.toFixed(1)}%`}
+              tone={structural > 3 ? 'bad' : 'good'} />
+            <Row k="Avg skill gap" v={
+              `${((s.cities.reduce((a, c) => a + c.skillGap, 0) / Math.max(1, s.cities.length)) * 100).toFixed(0)}%`} />
+            <Row k="Exec salary premium" v={
+              `${((s.companies.reduce((a, c) => a + c.execSalaryPremium, 0) / Math.max(1, s.companies.length)) * 100).toFixed(0)}%`} />
+            <Row k="Avg PM2.5" v={
+              `${(s.cities.reduce((a, c) => a + c.pm25, 0) / Math.max(1, s.cities.length)).toFixed(0)} µg`} />
+          </div>
+          <div className="mt-2 space-y-1">
+            {s.cities.slice(0, 6).map(c => (
+              <div key={c.id}>
+                <div className="flex justify-between text-[10px]">
+                  <span className="text-slate-300">{c.name}</span>
+                  <span className="font-mono text-slate-500">
+                    {fmtMoney(c.wageRate * 2080)}/yr · UE {c.unemploymentRate.toFixed(1)}%
+                  </span>
+                </div>
+                <Bar label=""
+                  value={c.infrastructure}
+                  tone={c.infrastructure > 65 ? 'emerald' : c.infrastructure > 40 ? 'amber' : 'rose'} />
+                <div className="text-[9px] text-slate-600">
+                  infrastructure {c.infrastructure.toFixed(0)} · PM2.5 {c.pm25.toFixed(0)}
+                  · skill gap {(c.skillGap * 100).toFixed(0)}%
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+            Workers do not teleport to the highest wage — moving costs money and housing is scarce, so
+            city wage gaps persist. Skill mismatch is structural: it never clears, however hot the cycle
+            runs. Only education and infrastructure close it.
+          </p>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
 // ════════════════ TREASURY: physical-supply assets & the bond market ════════════════
 function TreasuryView({ s, onAction }: { s: GameState; onAction: Props['onAction'] }) {
   const p = s.companies.find(c => c.id === s.playerCompanyId)!;
@@ -714,11 +1181,13 @@ function ResearchView({ s, onAction }: { s: GameState; onAction: Props['onAction
 }
 
 function OffersView({ s, onAction }: { s: GameState; onAction: Props['onAction'] }) {
+  const [counters, setCounters] = useState<Record<string, number>>({});
   if (s.offers.length === 0) return <p className="text-[12px] text-slate-500">No inbound offers at the moment.</p>;
   return (
     <div className="grid grid-cols-2 gap-3">
       {s.offers.map(o => {
         const premium = ((o.amount / Math.max(1, o.fairValue)) - 1) * 100;
+        const counterVal = counters[o.id] ?? Math.round(o.fairValue * 1.1);
         return (
           <Panel key={o.id} title={o.buildingName}>
             <p className="mb-2 text-[11px] leading-relaxed text-slate-400">{o.rationale}</p>
@@ -730,6 +1199,19 @@ function OffersView({ s, onAction }: { s: GameState; onAction: Props['onAction']
             <div className="mt-2 flex gap-1">
               <Btn variant="primary" className="flex-1" onClick={() => onAction('offer', o.id, true)}>Accept</Btn>
               <Btn variant="danger" className="flex-1" onClick={() => onAction('offer', o.id, false)}>Decline</Btn>
+            </div>
+            <div className="mt-2 border-t border-slate-700/60 pt-2">
+              <div className="mb-1 text-[9px] uppercase tracking-widest text-slate-600">Or send a counter</div>
+              <div className="flex gap-1">
+                <input type="number" value={counterVal}
+                  onChange={e => setCounters(c => ({ ...c, [o.id]: Number(e.target.value) }))}
+                  className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-200" />
+                <Btn onClick={() => onAction('counterOffer', o.id, counterVal)}>Send</Btn>
+              </div>
+              <p className="mt-1 text-[9px] leading-relaxed text-slate-600">
+                {o.buyerName} may accept it outright, meet you partway with a revised offer, or walk away if it's
+                too far from what the asset is worth to them.
+              </p>
             </div>
           </Panel>
         );

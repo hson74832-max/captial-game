@@ -66,6 +66,7 @@ export function generateProducts(rand: () => number): Product[] {
     perceivedQuality: 42 + rand() * 26,
     brand: def.kind === 'consumer' ? 12 + rand() * 48 : 4 + rand() * 10,
     ...ratingWeights(def.category, def.kind),
+    techLevel: def.kind === 'consumer' ? 2 + rand() * 3 : 1,
   }));
   const byName = new Map(list.map(p => [p.name, p]));
   // wire recipes
@@ -143,6 +144,11 @@ export function generateCities(rand: () => number, size: number): City[] {
       growthRate: 0.4 + rand() * 2.6,
       householdSavingsMonths: 1.2 + rand() * 2.4,
       householdDebtRatio: 0.18 + rand() * 0.22,
+      skillGap: 0.05 + rand() * 0.18,
+      laborMobility: 0.25 + rand() * 0.55,
+      pm25: 6 + rand() * 14,
+      waterStress: rand() * 0.35,
+      infrastructure: 48 + rand() * 34,
       populationHistory: Array.from({ length: 30 }, (_, m) => Math.floor(pop * (0.93 + m * 0.0025))),
     } as City;
   });
@@ -284,6 +290,10 @@ export function generateCompanies(rand: () => number, playerName: string, player
     assetHoldings: {}, assetCostBasis: {}, observedPlayerShare: {},
     predatoryTicks: 0, cartelId: null, sentiment: 1, riskTolerance: 0.5,
     planningHorizonMonths: 12,
+    authorizedShares: 4_000_000, treasuryShares: 0,
+    buybackYear: 2000, sharesBoughtBackThisYear: 0,
+    rndBudgetMonthly: 0, automationLevel: 0, execSalaryPremium: 0,
+    marketIntelTick: 0, lobbySpendMonthly: 0, suspectedPredation: 0,
   };
 
   const palette = COMPANY_COLORS.filter(c => c.toLowerCase() !== playerColor.toLowerCase())
@@ -322,6 +332,11 @@ export function generateCompanies(rand: () => number, playerName: string, player
       dividendPayout: 8 + rand() * 26,
       assetHoldings: {}, assetCostBasis: {}, observedPlayerShare: {},
       predatoryTicks: 0, cartelId: null,
+      authorizedShares: Math.round(shares * 2.5), treasuryShares: 0,
+      buybackYear: 2000, sharesBoughtBackThisYear: 0,
+      rndBudgetMonthly: 0, automationLevel: 0,
+      execSalaryPremium: 0, marketIntelTick: 0,
+      lobbySpendMonthly: 0, suspectedPredation: 0,
       sentiment: 0.9 + rand() * 0.6,
       riskTolerance: strategy === 'aggressive' ? 0.75 : strategy === 'conservative' ? 0.3 : 0.5,
       planningHorizonMonths: strategy === 'aggressive' ? 6 : strategy === 'conservative' ? 24 : 12,
@@ -396,7 +411,7 @@ export function createBuilding(
     sellPriceMultiplier: 1, transferPricingMode: 'cost_basis', transferPriceMultiplier: 1,
     supplyDisrupted: false,
     demandForecast: 0, safetyStockPolicy: 0.4, productionIntensity: 1,
-    trainingLevel: 3, effectiveTraining: 1.5,
+    trainingLevel: 3, effectiveTraining: 1.5, automationLevel: 0,
     openMarketSales: true, marketUnitsSold: 0, maintenanceReserve: 0,
     anchorPrice: 0, loyalCustomerBase: type === 'retail_store' ? 0.08 : 0.14,
     specialisation: type === 'retail_store' ? RETAIL_CATEGORIES[0] : null,

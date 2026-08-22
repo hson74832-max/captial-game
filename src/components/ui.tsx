@@ -66,6 +66,27 @@ export function Bar({ value, max = 100, tone = 'emerald', label }: { value: numb
   );
 }
 
+/**
+ * Diagnostic tooltip. Hovering a metric explains not just what it is, but what
+ * is DRIVING it right now — real numbers from the current state — so the player
+ * reasons about the system instead of guessing.
+ */
+export function Tip({ label, why, children }: {
+  label: string; why: string; children?: React.ReactNode;
+}) {
+  return (
+    <span className="group relative inline-flex cursor-help items-center gap-0.5">
+      {children ?? <span className="border-b border-dotted border-slate-600">{label}</span>}
+      <span className="pointer-events-none absolute bottom-full left-0 z-50 mb-1.5 hidden w-64
+        rounded-lg border border-slate-600 bg-slate-900 px-2.5 py-2 text-[10px] font-normal
+        leading-relaxed text-slate-200 shadow-2xl group-hover:block">
+        <span className="mb-1 block font-semibold text-slate-100">{label}</span>
+        {why}
+      </span>
+    </span>
+  );
+}
+
 export function Spark({ data, color = '#34d399', height = 34, fill = true }: { data: number[]; color?: string; height?: number; fill?: boolean }) {
   const pts = data.slice(-60);
   if (pts.length < 2) return <div style={{ height }} />;
@@ -115,10 +136,17 @@ export function Tabs({ tabs, active, onChange }: { tabs: string[]; active: strin
   );
 }
 
-export function Row({ k, v, tone }: { k: string; v: string; tone?: 'good' | 'bad' | 'muted' }) {
+export function Row({ k, v, tone, why }: {
+  k: React.ReactNode; v: string; tone?: 'good' | 'bad' | 'muted'; why?: string;
+}) {
+  // `why` turns the label into a diagnostic tooltip explaining the driver.
+  const label = why
+    ? <Tip label={typeof k === 'string' ? k : 'Metric'} why={why}><span
+        className="border-b border-dotted border-slate-600">{k}</span></Tip>
+    : k;
   return (
     <div className="flex items-baseline justify-between gap-2 py-0.5 text-[11px]">
-      <span className="truncate text-slate-500">{k}</span>
+      <span className="truncate text-slate-500">{label}</span>
       <span className={cx('font-mono tabular-nums',
         tone === 'good' ? 'text-emerald-400' : tone === 'bad' ? 'text-rose-400' : tone === 'muted' ? 'text-slate-500' : 'text-slate-200')}>{v}</span>
     </div>

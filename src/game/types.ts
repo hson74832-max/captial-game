@@ -45,6 +45,8 @@ export interface Product {
   priceWeight: number;
   qualityWeight: number;
   brandWeight: number;
+  /** Technology level, raised by R&D. Drives achievable quality. */
+  techLevel: number;
 }
 
 export type MarketSegment = 'value' | 'mainstream' | 'premium' | 'luxury';
@@ -102,6 +104,36 @@ export interface City {
   /** Household balance sheet: months of savings and debt/income ratio. */
   householdSavingsMonths: number;
   householdDebtRatio: number;
+  // ── Labour market structure ──
+  /** Share of vacancies unfilled for want of the right skills, 0..1. */
+  skillGap: number;
+  /** Willingness/cost of workers relocating here, 0..1 (higher = stickier). */
+  laborMobility: number;
+  /** Local particulate loading, µg/m³. */
+  pm25: number;
+  waterStress: number;
+  /** Quality of publicly provided infrastructure, 0..100. */
+  infrastructure: number;
+}
+
+/** One product in one city. Regional buffers + transport friction make
+ *  arbitrage real: a spread narrower than the freight cost is not worth
+ *  moving, so it persists. */
+export interface RegionQuote {
+  supply: number;      // recent local production arriving at market
+  demand: number;      // recent local uptake
+  stock: number;       // buffered units held locally
+  priceMul: number;    // local price vs national, 1 = at parity
+  pressure: number;    // smoothed imbalance -1..1
+}
+
+/** Emissions trading: a declining cap with tradeable allowances. */
+export interface EtsState {
+  cap: number;
+  price: number;
+  allocated: Record<string, number>;
+  surrendered: number;
+  revenue: number;
 }
 
 export interface CostLedger {
@@ -232,6 +264,8 @@ export interface Building {
   productionIntensity: number;    // 0.6..1.4 — rushing degrades quality
   trainingLevel: number;          // funded capability target, 0..9
   effectiveTraining: number;      // realised skill, lags the funded level
+  /** Capital-for-labour substitution, 0..5. Raises output, cuts headcount. */
+  automationLevel: number;
   openMarketSales: boolean;
   marketUnitsSold: number;
   maintenanceReserve: number;
@@ -299,6 +333,23 @@ export interface Company {
   sentiment: number;              // board optimism 0..2, drives overexpansion
   riskTolerance: number;
   planningHorizonMonths: number;
+
+  // ── Capital structure ──
+  /** Maximum shares the charter permits — the ceiling on issuance. */
+  authorizedShares: number;
+  /** Shares bought back and held in treasury (retired from float). */
+  treasuryShares: number;
+  buybackYear: number;
+  sharesBoughtBackThisYear: number;
+
+  // ── Capability & competition ──
+  rndBudgetMonthly: number;
+  automationLevel: number;      // 0..5 capital-for-labour substitution
+  execSalaryPremium: number;    // auctioned premium paid for C-suite talent
+  marketIntelTick: number;      // last refresh of aggregated market data
+  lobbySpendMonthly: number;
+  /** Months of observed player underpricing — bluff/predation detection. */
+  suspectedPredation: number;
 }
 
 export interface Economy {
@@ -342,6 +393,24 @@ export interface Economy {
   householdSavingsRate: number;
   cpiByCategory: Record<string, number>;
   strategicReserveDays: number;
+
+  // ── Monetary aggregates & unconventional policy ──
+  m1: number;
+  m2: number;
+  qeActive: boolean;
+  qeMonthlyPace: number;        // % of GDP purchased per month
+  qePurchasesToDate: number;
+  // ── Supply side & business cycles ──
+  tfpLevel: number;
+  tfpGrowth: number;
+  /** Kitchin inventory cycle phase, -1 destocking .. +1 restocking. */
+  inventoryCycle: number;
+  // ── Trade & external accounts ──
+  termsOfTrade: number;
+  commoditySuperCycle: number;
+  // ── Carbon market ──
+  etsAllowancePrice: number;
+  etsCap: number;
   co2Stock: number;
   creditTightness: number;
   bankCapitalAdequacy: number;
@@ -647,6 +716,11 @@ export interface GameState {
   cartels: Cartel[];
   globalMarket: GlobalMarket;
   portShipments: PortShipment[];
+  /** cityId → productId → regional buffer. Sparse until a market trades. */
+  regional: Record<string, Record<string, RegionQuote>>;
+  ets: EtsState;
+  /** Per-industry competition mode: quantity (Cournot) or price (Bertrand). */
+  competitionModes: Record<string, 'cournot' | 'bertrand'>;
   bonds: Bond[];
   tradedAssets: TradedAsset[];
   landHoldings: LandHolding[];

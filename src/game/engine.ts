@@ -31,7 +31,7 @@ import {
 import { clearEntityCaches, generateEntities, updateEntities } from './entities';
 import {
   retailDemand, productRating, scarcityMultiplier, updateSocialProof,
-  updateHouseholdBudgets,
+  updateHouseholdBudgets, updateBrandEquity, searchCompetition, networkEffectMultiplier,
 } from './consumers';
 import {
   collectCorporateTax, collectPropertyTax, payDividends, replenishSeaports,
@@ -41,6 +41,21 @@ import {
   runCentralBank, runFiscalBudget, simulateEnergyMarket, updateCpiBreakdown,
   updateWageSpiral,
 } from './macro';
+import {
+  regionalPrice, recordDemand, recordSupply, simulateRegionalMarkets, carryingCost,
+} from './regional';
+import {
+  applyCompetitionDoctrine, detectBluffs, maybeGrantAIPatent, refreshAIIntel,
+  simulateAIDevelopment, simulateAIRnD, simulateCounterLobby, simulateExecutiveMarket,
+} from './competition';
+import {
+  applyAutomation, simulateLaborMobility, simulateLocalExternalities,
+  simulatePublicGoods, simulateSkillMismatch,
+} from './labor';
+import {
+  runQuantitativeEasing, simulateETS, simulateInventoryCycle, simulateTFP,
+  simulateTermsOfTrade,
+} from './policy';
 
 // ============================ SETUP ============================
 export function createGame(seed = 20260214, playerName = 'Northwind Group', playerColor = '#22d3a7'): GameState {
@@ -69,6 +84,11 @@ export function createGame(seed = 20260214, playerName = 'Northwind Group', play
       twoYearYield: 4.3, threeMonthYield: 5.1, co2Stock: 372,
       dividendTaxRate: 15,
       centralBankAssets: 8_400_000_000, baseMoney: 84, broadMoney: 214,
+      m1: 168, m2: 214,
+      qeActive: false, qeMonthlyPace: 0, qePurchasesToDate: 0,
+      tfpLevel: 100, tfpGrowth: 1.4, inventoryCycle: 0,
+      termsOfTrade: 100, commoditySuperCycle: 0,
+      etsAllowancePrice: 24, etsCap: 1_000_000,
       productivityGrowth: 1.6, unitLaborCostGrowth: 0.8, householdSavingsRate: 7.2,
       cpiByCategory: { food: 100, housing: 100, energy: 100, services: 100, goods: 100, core: 100 },
       strategicReserveDays: 120,
@@ -87,6 +107,9 @@ export function createGame(seed = 20260214, playerName = 'Northwind Group', play
     ],
     patents: [], cartels: [], bonds: [], tradedAssets: [],
     globalMarket: { price: {}, netExport: {} }, portShipments: [],
+    regional: {},
+    ets: { cap: 1_000_000, price: 24, allocated: {}, surrendered: 0, revenue: 0 },
+    competitionModes: {},
     landHoldings: [], pipeline: [], contracts: {}, negotiation: null,
     stockMarket: {
       index: 10_000,
@@ -265,9 +288,13 @@ export function tick(state: GameState) {
   if (state.tick % 6 === 0) simulateAssetPrices(state);
   // Monetary layer: central bank balance sheet, CPI decomposition, energy.
   runCentralBank(state);
+  runQuantitativeEasing(state);
   updateCpiBreakdown(state);
   simulateEnergyMarket(state);
   simulatePortShipments(state);
+  applyAutomation(state);
+  // Regional markets settle once a day — that is how fast goods can move.
+  if (state.hour === 0) simulateRegionalMarkets(state);
   if (state.hour === 0) onNewDay(state, idx);
   if (state.hour === 0 && state.day === 1) onNewMonth(state, idx);
   if (state.hour === 0 && state.day === 1 && state.month === 1) onNewYear(state);
@@ -353,10 +380,24 @@ function simulateBuildings(state: GameState, idx: Index) {
     costs.utilities = (b.employees * 130 + b.capacity * (isProducer(b.type) ? 0.42 : 0.1)) / 720;
     costs.marketing = b.adBudget / 720;
     costs.maintenance = value * 0.012 * perHourYear;
+    // Maintenance and refurbishment are related but NOT the same charge.
+    // Maintenance is the routine, unavoidable cost of keeping the place
+    // clean, serviced and insurable — it is already fully expensed above via
+    // operatingCost, so nothing here adds a second charge. Part of that same
+    // spend is earmarked into a sinking fund (capped at 20% of construction
+    // cost) that later offsets a Refurbish bill: paying your maintenance
+    // bills for years genuinely makes the eventual capital repair cheaper,
+    // exactly like a real reserve fund.
+    b.maintenanceReserve = Math.min(b.constructionCost * 0.2,
+      b.maintenanceReserve + costs.maintenance * 0.3);
     costs.insurance = value * (isProducer(b.type) ? 0.008 : 0.0035) * perHourYear;
     costs.propertyTax = value * eco.propertyTaxRate * perHourYear;
     costs.other = (b.type === 'bar' || b.type === 'restaurant' ? 420 : 120) / 720
-      + wageHourly * b.trainingBudget * 0.16;
+      + wageHourly * b.trainingBudget * 0.16
+      // Inventory carrying cost. Stock is not free to hold: capital, storage,
+      // insurance, shrinkage and obsolescence all accrue. Without this there
+      // was never a reason not to over-buy, which erased regional scarcity.
+      + carryingCost(b);
     costs.freight = 0;
 
     // ================== PRODUCERS ==================
@@ -451,7 +492,9 @@ function simulateBuildings(state: GameState, idx: Index) {
         rate *= rush.output;
         product.quality = Math.max(1, Math.min(100, product.quality * (0.999 + (rush.quality - 1) * 0.002)));
         const patent = patentPremium(state, b.companyId, product.id);
-        const spot = product.currentPrice * b.pricingMultiplier * priceMul * b.sellPriceMultiplier * patent;
+        // Producers clear into their LOCAL market, not a single national pool.
+        const local = regionalPrice(state, b.cityId, product.id);
+        const spot = local * b.pricingMultiplier * priceMul * b.sellPriceMultiplier * patent;
         const elasticity = Math.pow(Math.max(0.35, b.pricingMultiplier), -1.5);
         const glut = Math.min(2.2, product.worldSupply / Math.max(1, product.worldDemand));
         // Internal-sale plants withhold output from the open market entirely.
@@ -459,6 +502,9 @@ function simulateBuildings(state: GameState, idx: Index) {
         const sold = Math.min(onHand, absorb);
         b.inventory[product.id] = Math.min(b.inventoryCapacity, onHand - sold);
         b.lastUnitsSold = sold;
+        // Goods leaving the factory land in this city's buffer, pushing the
+        // local price down until someone ships them out.
+        recordSupply(state, b.cityId, product.id, sold);
         b.revenue = sold * spot;
         b.cogs = sold * (b.type === 'factory' ? inputCostPerUnit * 0.92 : product.productionCost * 0.35);
         b.utilization = Math.min(100, (rate / Math.max(0.001, perDay / 24)) * 100);
@@ -479,6 +525,8 @@ function simulateBuildings(state: GameState, idx: Index) {
       const isDaytime = state.hour >= 8 && state.hour <= 20;
       const outletsInCity = (idx.byCity.get(city.id) ?? []).length;
       const carrying = (idx.byCity.get(city.id) ?? []).filter(x => x.products.length > 0).length;
+      // Chain scale drives network effects across the whole group.
+      const chainScale = (idx.byCompany.get(b.companyId) ?? []).length;
       for (const line of lines) {
         const price = line.retailPrice * b.pricingMultiplier;
         const desired = retailDemand(city, line, b, traffic, eco.consumerConfidence,
@@ -486,7 +534,11 @@ function simulateBuildings(state: GameState, idx: Index) {
           * loc * service * staffing * DAYPART(state.hour, b.type)
           * (1 + b.brandEquity / 260) * (0.6 + city.population / 90_000)
           * productRating(line, b.pricingMultiplier) / 45
-          * scarcityMultiplier(b.inventory[line.id] ?? 0, b.capacity / 200);
+          * scarcityMultiplier(b.inventory[line.id] ?? 0, b.capacity / 200)
+          // Active searchers compare you against the cheapest rival in town.
+          * searchCompetition(state, city, line, b)
+          // Network effects: chain scale feeds back into demand.
+          * networkEffectMultiplier(line, chainScale);
         // The first price a shopper sees becomes the anchor for this line.
         if (b.anchorPrice <= 0) b.anchorPrice = price;
         b.anchorPrice = b.anchorPrice * 0.999 + price * 0.001;
@@ -496,7 +548,11 @@ function simulateBuildings(state: GameState, idx: Index) {
         if (units > 0) {
           b.inventory[line.id] = stock - units;
           rev += units * price;
-          cost += units * (line.currentPrice * 1.02);
+          // Buyers pay their LOCAL wholesale price. Sourcing into a surplus
+          // region is cheaper; a shortage region costs more and persists.
+          const localCost = regionalPrice(state, b.cityId, line.id);
+          cost += units * localCost * 1.02;
+          recordDemand(state, b.cityId, line.id, units);
           sold += units;
           b.loyalty = Math.min(1, b.loyalty + 0.00012);
           b.loyalCustomerBase = Math.min(0.6, b.loyalCustomerBase + 0.00004);
@@ -510,7 +566,9 @@ function simulateBuildings(state: GameState, idx: Index) {
       }
       b.revenue = rev; b.cogs = cost; b.lastUnitsSold = sold;
       b.utilization = Math.min(100, sold / Math.max(0.001, b.capacity / 8 / 24) * 100);
-      b.brandEquity = Math.max(0, Math.min(100, b.brandEquity * 0.9998 + (b.adBudget / 720) * 0.00006));
+      // Brand equity now decays without ad support, rather than only growing.
+      const mainLine = lines[0];
+      updateBrandEquity(b, b.adBudget, mainLine?.category ?? 'Grocery', b.revenue);
     }
 
     // ================== HOSPITALITY ==================
@@ -841,8 +899,14 @@ function simulateProductMarket(state: GameState) {
     const inflationDrift = 1 + state.economy.inflation / 100 / 365;
     let baseline = p.productionCost * (p.kind === 'consumer' ? 1.45 : p.kind === 'semi' ? 1.35 : 1.28);
     if (p.kind === 'raw' || p.kind === 'farm') baseline *= (0.9 + state.economy.dieselPrice / 3.35 * 0.12);
-    const target = baseline * pressure;
+    const target = Math.max(p.productionCost * 0.15, baseline * pressure);
     p.currentPrice += (target - p.currentPrice) * 0.06;
+    // ── Hard price floor ──
+    // Extreme oversupply could otherwise drive `target` — and therefore the
+    // price — negative, which would mean paying people to take goods away and
+    // would hand anyone holding inventory an infinite loss. Prices can fall to
+    // 15% of production cost, but no further.
+    p.currentPrice = Math.max(p.productionCost * 0.15, p.currentPrice);
     p.currentPrice *= inflationDrift;
     p.retailPrice = p.currentPrice * (p.kind === 'consumer' ? 1.55 : 1.15);
     p.productionCost *= inflationDrift;
@@ -872,8 +936,19 @@ function onNewMonth(state: GameState, idx: Index) {
   collectPropertyTax(state);
   if (state.month % 6 === 0) simulateAntitrust(state);
 
+  // ── Labour market: migration, skills, public goods, externalities ──
+  simulateLaborMobility(state);
+  simulateSkillMismatch(state);
+  simulateLocalExternalities(state);
+  simulatePublicGoods(state);
+  simulateExecutiveMarket(state);
+
   // ── Fiscal, monetary and household layers ──
   runFiscalBudget(state);
+  simulateTFP(state);
+  simulateInventoryCycle(state);
+  simulateTermsOfTrade(state);
+  simulateETS(state);
   updateWageSpiral(state);
   updateMoneySupply(state);
   replenishSeaports(state);
@@ -888,6 +963,15 @@ function onNewMonth(state: GameState, idx: Index) {
   reviewCreditRatings(state);
   simulateAiCapitalAllocation(state);
   payCoupons(state);
+
+  // ── Competitive dynamics: intel, doctrine, capability, politics ──
+  refreshAIIntel(state);
+  applyCompetitionDoctrine(state);
+  detectBluffs(state);
+  simulateAIRnD(state);
+  simulateAIDevelopment(state);
+  simulateCounterLobby(state);
+  maybeGrantAIPatent(state);
   // Distressed firms that survived three months are liquidated messily.
   for (const co of state.companies) {
     if (co.isPlayer || co.monthsInDistress <= 3 || co.cash > 0) continue;
@@ -1312,22 +1396,12 @@ export function buyListedBuilding(state: GameState, buildingId: string): boolean
   return true;
 }
 
-export function sellBuilding(state: GameState, buildingId: string) {
-  const b = findBuilding(state, buildingId);
-  const p = playerCo(state);
-  if (!b || b.companyId !== p.id) return;
-  // Sales close at 88% of fair value, never more — the spread between
-  // construction cost and resale is the broker's cut, and that cut is the
-  // reason the "build → list → sell → build" rotation is a net loss, not a
-  // free money glitch. A 6% slippage below fair value is normal for an
-  // arm's-length transaction, too.
-  const proceeds = b.fairValue * 0.88;
-  p.cash += proceeds;
-  p.buildings = p.buildings.filter(i => i !== b.id);
-  b.companyId = 'system'; b.forSale = true; b.askingPrice = Math.round(b.fairValue * 1.05);
-  state.selectedBuildingId = null;
-  notify(state, `Sold ${b.name} for $${fmtShort(proceeds)}.`, 'success');
-}
+// NOTE: There is deliberately no instant-sell function. Disposing of a
+// building always goes one of two ways: list it for sale and wait for a
+// buyer (see the "List for sale" control), or accept/counter/reject an
+// inbound offer through counterOffer()/respondToOffer() above. A guaranteed
+// same-tick sale at a fixed fraction of fair value was an exploitable,
+// unrealistic shortcut — real assets do not have a "sell now" button.
 
 export function upgradeBuilding(state: GameState, buildingId: string) {
   const b = findBuilding(state, buildingId);
@@ -1359,9 +1433,24 @@ export function repairBuilding(state: GameState, buildingId: string) {
   // leaving the real reason to refurbish intact: a run-down building
   // produces less, breaks down, and eventually stops operating altogether.
   const cost = (100 - b.condition) / 100 * b.constructionCost * 0.55;
-  if (p.cash < cost) { notify(state, `Refurbishment needs $${fmtShort(cost)}.`, 'warning'); return; }
-  p.cash -= cost; b.condition = 100; b.isOperating = true;
-  notify(state, `${b.name} refurbished to as-new condition for $${fmtShort(cost)}.`, 'success');
+  // Years of paid maintenance built a reserve fund; that fund is drawn down
+  // first, so only the shortfall needs fresh cash. This is what makes
+  // maintenance and refurbishment two genuinely different things: the first
+  // is a small unavoidable drip that partly pre-funds the second, the second
+  // is the occasional lump-sum repair that resets condition to 100.
+  const fromReserve = Math.min(b.maintenanceReserve, cost);
+  const cashNeeded = cost - fromReserve;
+  if (p.cash < cashNeeded) {
+    notify(state, `Refurbishment needs $${fmtShort(cashNeeded)} in cash `
+      + `(${fmtShort(fromReserve)} covered by the maintenance reserve).`, 'warning');
+    return;
+  }
+  p.cash -= cashNeeded;
+  b.maintenanceReserve -= fromReserve;
+  b.condition = 100;
+  b.isOperating = true;
+  notify(state, `${b.name} refurbished to as-new condition for $${fmtShort(cashNeeded)}`
+    + (fromReserve > 0 ? ` (${fmtShort(fromReserve)} drawn from the maintenance reserve).` : '.'), 'success');
 }
 
 export function setBuildingField<K extends keyof Building>(state: GameState, id: string, field: K, value: Building[K]) {
@@ -1484,8 +1573,55 @@ export function respondToOffer(state: GameState, offerId: string, accept: boolea
     }
   } else {
     notify(state, `Offer from ${offer.buyerName} declined.`, 'info');
+    state.offers = state.offers.filter(o => o.id !== offerId);
   }
+}
+
+/**
+ * Counter an inbound buyout offer instead of only accept/decline. The buyer
+ * has a genuine ceiling (fair value × a greed factor from their strategy):
+ * counter under it and they take the deal immediately, counter a bit over it
+ * and they meet you partway with a fresh offer, counter far over it and they
+ * walk. This replaces the old one-click "instant sell" — every disposal now
+ * goes through a listing or a real back-and-forth negotiation.
+ */
+export function counterOffer(state: GameState, offerId: string, counterAmount: number) {
+  const offer = state.offers.find(o => o.id === offerId);
+  const p = playerCo(state);
+  const b = offer ? findBuilding(state, offer.buildingId) : undefined;
+  const buyer = offer ? state.companies.find(c => c.id === offer.buyerId) : undefined;
+  if (!offer || !b || !buyer) return;
+
+  const greed = buyer.strategy === 'aggressive' ? 1.18 : buyer.strategy === 'conservative' ? 1.0 : 1.1;
+  const ceiling = b.fairValue * greed;
+
+  if (counterAmount <= ceiling) {
+    if (buyer.cash < counterAmount) {
+      notify(state, `${buyer.name} can no longer cover $${fmtShort(counterAmount)} — the offer lapses.`, 'warning');
+      state.offers = state.offers.filter(o => o.id !== offerId);
+      return;
+    }
+    buyer.cash -= counterAmount;
+    p.cash += counterAmount;
+    b.companyId = buyer.id;
+    p.buildings = p.buildings.filter(i => i !== b.id);
+    buyer.buildings.push(b.id);
+    notify(state, `Deal — ${buyer.name} accepted your counter of $${fmtShort(counterAmount)} for ${b.name}.`, 'success');
+    news(state, `${buyer.name} acquires ${b.name} from ${p.name} for $${fmtShort(counterAmount)}`, 'breaking');
+    state.offers = state.offers.filter(o => o.id !== offerId);
+    return;
+  }
+
+  if (counterAmount <= ceiling * 1.18) {
+    const revised = Math.round((ceiling + counterAmount) / 2);
+    offer.amount = revised;
+    offer.expiresTick = state.tick + TICKS_PER_MONTH;
+    notify(state, `${buyer.name} won't pay $${fmtShort(counterAmount)}, but raises their offer to $${fmtShort(revised)}.`, 'warning');
+    return;
+  }
+
   state.offers = state.offers.filter(o => o.id !== offerId);
+  notify(state, `${buyer.name} walks away — $${fmtShort(counterAmount)} was too far from what ${b.name} is worth to them.`, 'warning');
 }
 
 export function startResearch(state: GameState, name: string) {
@@ -1524,6 +1660,128 @@ export function eligibleFor(state: GameState, b: Building): Product[] {
 }
 
 // ============================ FORMATTERS ============================
+// ════════════════════════════════════════════════════════════════════
+// COMPANY FINANCIAL STATEMENTS
+// ════════════════════════════════════════════════════════════════════
+export interface CompanyFinancials {
+  // Income statement (monthly)
+  revenue: number;
+  cogs: number;
+  grossProfit: number;
+  opex: number;
+  ebitda: number;
+  depreciation: number;
+  ebit: number;
+  interest: number;
+  pretax: number;
+  tax: number;
+  netIncome: number;
+  eps: number;
+  // Balance sheet
+  cash: number;
+  inventoryValue: number;
+  propertyValue: number;
+  landValue: number;
+  securities: number;
+  totalAssets: number;
+  debt: number;
+  payables: number;
+  totalLiabilities: number;
+  equity: number;
+  // Share structure
+  sharesOutstanding: number;
+  authorizedShares: number;
+  treasuryShares: number;
+  founderShares: number;
+  publicFloat: number;
+  sharePrice: number;
+  marketCap: number;
+  bookValuePerShare: number;
+  // Ratios
+  grossMargin: number;
+  netMargin: number;
+  roe: number;
+  roa: number;
+  leverage: number;
+  currentRatio: number;
+  buildings: number;
+}
+
+/** Full income statement and balance sheet for one company. */
+export function companyFinancials(state: GameState, companyId: string): CompanyFinancials {
+  const co = state.companies.find(c => c.id === companyId)!;
+  const owned = state.buildings.filter(b => b.companyId === companyId);
+
+  // ── Income statement, scaled to one month ──
+  const revenue = owned.reduce((s, b) => s + b.dailyRevenue, 0) * 30;
+  // COGS and operating cost are tracked live on the building this tick; scale
+  // the hourly run rate up to a month so the statement is comparable.
+  const cogs = owned.reduce((s, b) => s + b.cogs, 0) * 24 * 30;
+  const opex = owned.reduce((s, b) => s + b.operatingCost, 0) * 24 * 30;
+  const grossProfit = revenue - cogs;
+  const ebitda = grossProfit - opex;
+  // Straight-line depreciation on the built estate over 25 years.
+  const propertyValue = owned.reduce((s, b) => s + b.constructionCost, 0);
+  const depreciation = propertyValue / 25 / 12;
+  const ebit = ebitda - depreciation;
+  const interest = (co.debt * co.interestRate) / 100 / 12;
+  const pretax = ebit - interest;
+  const tax = Math.max(0, pretax) * (state.economy.corporateTaxRate / 100);
+  const netIncome = pretax - tax;
+
+  // ── Balance sheet ──
+  let inventoryValue = 0;
+  for (const b of owned) {
+    for (const [pid, qty] of Object.entries(b.inventory)) {
+      const p = state.products.find(x => x.id === pid);
+      inventoryValue += qty * (p?.currentPrice ?? 0);
+    }
+  }
+  const landValue = owned.reduce((s, b) => s + b.landValue, 0)
+    + state.landHoldings.filter(h => h.ownerId === companyId)
+      .reduce((s, h) => s + h.currentValue, 0);
+  const securities = Object.entries(co.assetHoldings).reduce((s, [id, units]) => {
+    const a = state.tradedAssets.find(x => x.id === id);
+    return s + units * (a?.price ?? 0);
+  }, 0) + Object.entries(co.equityHoldings).reduce((s, [id, shares]) => {
+    const t = state.companies.find(x => x.id === id);
+    return s + shares * (t?.sharePrice ?? 0);
+  }, 0);
+  const totalAssets = Math.max(0, co.cash + inventoryValue + propertyValue + landValue + securities);
+  const debt = co.debt;
+  // Trade payables are roughly a month of input purchases.
+  const payables = cogs * 0.35;
+  const totalLiabilities = debt + payables;
+  const equity = totalAssets - totalLiabilities;
+
+  // ── Share structure ──
+  const shares = Math.max(1, co.sharesOutstanding);
+  const float = Math.max(0, shares - co.founderShares);
+
+  const annualNet = netIncome * 12;
+  return {
+    revenue, cogs, grossProfit, opex, ebitda, depreciation, ebit, interest, pretax, tax, netIncome,
+    eps: netIncome / shares,
+    cash: co.cash, inventoryValue, propertyValue, landValue, securities,
+    totalAssets, debt, payables, totalLiabilities, equity,
+    sharesOutstanding: shares,
+    authorizedShares: co.authorizedShares,
+    treasuryShares: co.treasuryShares,
+    founderShares: co.founderShares,
+    publicFloat: float,
+    sharePrice: co.sharePrice,
+    marketCap: co.marketCap,
+    bookValuePerShare: equity / shares,
+    grossMargin: revenue > 0 ? (grossProfit / revenue) * 100 : 0,
+    netMargin: revenue > 0 ? (netIncome / revenue) * 100 : 0,
+    roe: equity > 0 ? (annualNet / equity) * 100 : 0,
+    roa: totalAssets > 0 ? (annualNet / totalAssets) * 100 : 0,
+    leverage: totalAssets > 0 ? (debt / totalAssets) * 100 : 0,
+    currentRatio: totalLiabilities > 0 ? (co.cash + inventoryValue + securities) / totalLiabilities : 99,
+    buildings: owned.length,
+  };
+}
+
 export function fmtShort(n: number): string {
   const a = Math.abs(n);
   if (a >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
